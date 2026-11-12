@@ -22,13 +22,14 @@
 <!-- brand:header:end -->
 
 How to build small, deterministic homelab bots that report to Discord. This repo is a
-how-to with a runner and four example bots, not a product: copy what you need.
+how-to with a runner and five example bots, not a product: copy what you need.
 
 | | Bot | Pattern |
 |---|---|---|
 | <img src="docs/assets/icons/hellobot.png" width="48" alt=""> | `hellobot` | the smallest bot; copy it to start yours |
 | <img src="docs/assets/icons/socbot.png" width="48" alt=""> | `socbot` | daily report with a new-versus-known state file |
-| <img src="docs/assets/icons/skillbot.png" width="48" alt=""> | `skillbot` | collect at night, report in the morning; a model writes, code validates |
+| <img src="docs/assets/icons/skillbot.png" width="48" alt=""> | `skillbot` | inventory several hosts through a restricted key, compare with upstream releases, screen what is new |
+| <img src="docs/assets/icons/reposbot.png" width="48" alt=""> | `reposbot` | collect at night, report in the morning; a model writes, code validates |
 | <img src="docs/assets/icons/canarybot.png" width="48" alt=""> | `canarybot` | watcher: silent unless something changed |
 
 Each bot gets its own face. The icons were generated locally in one shared style, so a
@@ -70,15 +71,16 @@ model, plus a systemd timer. Nothing more.
 ```
 bin/run_bot.py          runner: report -> advice -> Discord (--dry-run prints instead)
 lib/mcp.py              minimal MCP (streamable HTTP) client for collectors
+lib/hosts.py            ssh argv for a restricted key, optional Wake-on-LAN (skillbot)
 bots/<bot>/report.py    the deterministic report; prints between the markers
 bots/<bot>/advice.md    optional prompt for the advice model
 systemd/                labbot@.service template, one .timer per bot, optional drop-ins
 tests/                  one test file per bot; no network, synthetic fixtures
 ```
 
-Variants: `run_bot.py skillbot.collect` runs `bots/skillbot/collect.py` and, if present,
-uses `bots/skillbot/collect.advice.md`. Systemd instance names follow the same form:
-`labbot@skillbot.collect.service`.
+Variants: `run_bot.py reposbot.collect` runs `bots/reposbot/collect.py` and, if present,
+uses `bots/reposbot/collect.advice.md`. Systemd instance names follow the same form:
+`labbot@reposbot.collect.service`.
 
 ## Requirements
 
@@ -114,7 +116,7 @@ been seen so the report can mark new things (🆕) against known ones, and the f
 silent baseline. Only aggregates are posted, never raw log lines. A quiet source is a finding,
 not good news.
 
-**Collect at night, report in the morning: `bots/skillbot`.** `collect.py` does the slow
+**Collect at night, report in the morning: `bots/reposbot`.** `collect.py` does the slow
 work (here: ask a model for Junos `set` commands for ten tasks, run them through `commit check`
 on one lab device) and saves results to the state file; it prints an empty report, so nothing
 is posted. `report.py` runs later, reads the file, compares with the previous night and posts.
@@ -125,6 +127,32 @@ validates" pattern, with hard safety rules in code, not in the prompt:
 - model output is untrusted: only lines matching a strict regex reach the device, and
   `delete`, `deactivate` and anything touching logins or services is refused;
 - the tool used cannot change the device (a commit *check* discards its candidate).
+
+**Inventory and screen: `bots/skillbot`.** Which AI-agent skills are installed on your
+hosts (Claude, Codex, Hermes), against the latest release of the public repos they come from,
+with every newer version screened before anyone installs it. `collect.py` runs at night, `report.py`
+in the morning, as in reposbot, with these rules:
+
+- **A forced-command SSH key.** Each remote host runs `collect.sh` whatever the caller asks, via a
+  `restrict,from=...,command=...` line in `authorized_keys` that `setup.sh` adds. The collector
+  prints names, versions and hashes, never file contents, and takes no arguments, so a stolen key
+  can only read an inventory. Sleeping hosts can be woken first (`lib/hosts.py`, optional).
+- **Numeric version comparison.** `1.10.0` is newer than `1.9.9`; missing parts count as 0. Each
+  skill is `outdated`, `drift` (same or no version, different file hash), `ahead` or current.
+- **An untrusted tarball is extracted safely.** Regular files and directories only, below the target,
+  with caps on size and member count; links, absolute names and `..` are refused, nothing is executed.
+- **Review flags are prompts to read the diff, not verdicts.** Regexes look for instruction override,
+  hiding things from the user, fetch-and-run, outbound data, credential paths, hidden characters,
+  new domains and widened `allowed-tools`. Ops skills use `sudo` and `curl` legitimately, so a flag
+  means "read this line", and nothing is blocked or installed because of one.
+- **Flag only what is new.** Against an installed copy, only lines that are not already there are
+  flagged; with no copy to compare, the whole version is scanned and says so.
+- **A model's reading is stored as labelled, unverified text.** A local model summarises the diff
+  with no tools, and the report shows it as "unverified, may be wrong", defanged like any other
+  untrusted text. It never changes a flag or triggers an action.
+- **Post only on change.** The report speaks when something is new since the last collect, or on
+  Mondays while anything is still outdated; otherwise it prints nothing. The first night of the
+  "other skills" list is a silent baseline.
 
 **Watcher: `bots/canarybot`.** Silent unless something changed. It looks up the latest
 release of each project, and only for a tag it has not tried, boots the Docker image as a
@@ -194,19 +222,29 @@ variable with a placeholder default. Set them in a drop-in or the unit's `Enviro
 | `LABBOTS_TARGET` | `discord:#general` | runner | where Hermes posts |
 | `LABBOTS_TIMEOUT` | `1800` | runner | seconds a `report.py` may run |
 | `SOCBOT_MCP` | `ssdf` | socbot | name of the SSDF MCP server in the Hermes config |
-| `SKILLBOT_DEVICE` | `lab-vsrx` | skillbot | the one device name skillbot may address |
-| `SKILLBOT_MCP` | `junos` | skillbot | name of the Junos MCP server in the Hermes config |
-| `SKILLBOT_MODEL` | `qwen3-coder-next:latest` | skillbot | model that writes the config |
-| `SKILLBOT_SKILLS_DIR` | `~/.hermes/skills/devops` | skillbot | where `<skill>/SKILL.md` lives |
+| `REPOSBOT_DEVICE` | `lab-vsrx` | reposbot | the one device name reposbot may address |
+| `REPOSBOT_MCP` | `junos` | reposbot | name of the Junos MCP server in the Hermes config |
+| `REPOSBOT_MODEL` | `qwen3-coder-next:latest` | reposbot | model that writes the config |
+| `REPOSBOT_SKILLS_DIR` | `~/.hermes/skills/devops` | reposbot | where `<skill>/SKILL.md` lives |
+| `SKILLBOT_HOSTS` | `hosta,hostb` | skillbot | hosts to inventory; the one running the job is read locally, the rest over SSH |
+| `SKILLBOT_SSH_KEY` | `id_ed25519_skillbot` | skillbot | file in `~/.ssh` whose forced command runs `collect.sh` |
+| `SKILLBOT_MODEL` | `llama3.1:8b` | skillbot | model that reads each diff |
+| `SKILLBOT_STATE` | `~/.local/state/labbots/skillbot.json` | skillbot | state file |
+| `SKILLBOT_WAKE_MACS` | empty | skillbot | `name=MAC,...` for hosts that sleep; empty wakes nothing |
+| `SKILLBOT_WAKE_BROADCAST` | `255.255.255.255` | skillbot | broadcast address for the wake packet |
+| `SKILLBOT_PUBKEY`, `SKILLBOT_FROM` | none, `198.51.100.10` | `setup.sh` | the collector's public key, and its address as remote hosts see it |
 
 MCP servers are looked up by name in `~/.hermes/config.yaml` (`mcp_servers:`, with `url` and
 `headers`); `${VAR}` in a header is filled from `~/.hermes/.env`. Mint a token that is read-only
 and scoped to the tools the bot needs, one per bot.
 
 socbot also needs the SSDF MCP server with the tools `recent_alerts`, `query_flows`,
-`ingest_status` and `fabric_status`. skillbot needs a Junos MCP server with a
+`ingest_status` and `fabric_status`. reposbot needs a Junos MCP server with a
 `commit_check_config` tool and your own `srx-*/SKILL.md` skills, and edits to the `TASKS` and
-`FACTS` in `bots/skillbot/tasks.py` to describe your device. canarybot needs Docker and
+`FACTS` in `bots/reposbot/tasks.py` to describe your device. skillbot needs no MCP server: generate
+a key, list your hosts in `SKILLBOT_HOSTS` (names `ssh` can resolve), run `bots/skillbot/setup.sh
+<remote-host>...` once, and edit `SOURCES` in `bots/skillbot/collect.py` if you track other repos
+(its two defaults are public). It reads GitHub unauthenticated, 1-3 calls per source. canarybot needs Docker and
 public network access to GitHub and Docker Hub; its `REPOS` table lists the
 `mechubsec/*` projects it canaries.
 
@@ -218,7 +256,7 @@ public network access to GitHub and Docker Hub; its `REPOS` table lists the
   Put what it needs to reason in the report, tell it to use only what the report says, and
   forbid inventing facts. Test the prompt on a clean day: it must say nothing needs you.
 - **Narrow a locationless error deterministically.** Junos reports a syntax error without
-  naming the line. skillbot re-checks lines one at a time (`find_syntax_error_line`) instead of
+  naming the line. reposbot re-checks lines one at a time (`find_syntax_error_line`) instead of
   asking a model where the mistake is.
 - **Filter before limit.** If a server applies its severity filter after its row limit, a
   noisy low-severity source fills the page and the real alerts never arrive. socbot asks per
@@ -226,6 +264,10 @@ public network access to GitHub and Docker Hub; its `REPOS` table lists the
 - **An error reply is not a quiet night.** Raise on `{error}` replies (`checked()` in socbot)
   so a broken collector cannot look like a clean estate.
 - **A stale collector is a finding.** The morning report says when no run happened.
+- **A collector behind a forced command should print facts, not files.** Names, versions and
+  hashes are enough to compare; a key that can only print them is cheap to lose.
+- **Untrusted text can be scanned by rules and read by a model, but neither result should trigger
+  an action.** Both are advice to a human: label them, defang them, and let a person decide.
 - **Keep the first run quiet.** Learn a baseline, then mark new things from the next run on.
 - **Keep prompts short and rules explicit.** A smaller model turns "background, not a task"
   into a task; pick a bigger model per bot with a drop-in when it matters.
