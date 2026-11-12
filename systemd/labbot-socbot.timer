@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: security report
+
+[Timer]
+OnCalendar=*-*-* 09:30:00
+Persistent=true
+Unit=labbot@socbot.service
+
+[Install]
+WantedBy=timers.target
