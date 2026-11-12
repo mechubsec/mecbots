@@ -24,10 +24,10 @@ STATE = Path.home() / ".local/state/labbots/socbot.json"
 FORGET_SECONDS = 30 * 86400
 LONG_QUIET_HOURS = 48
 SHOWN = 10
-DENY_ACTION = "flow_session_deny"  # the SRX deny event; other vendors use other action names
+# SRX: flow_session_deny; PAN-OS traffic logs become "flow_" + subtype (flow_deny, flow_drop)
+DENY_ACTIONS = ("flow_session_deny", "flow_deny", "flow_drop")
 ALERT_LIMIT = 500
-# recent_alerts with no provider filter returns nothing (SSDF applies min_severity after its row limit,
-# so PAN-OS low-severity system events crowd everything out): ask per provider that raises real alerts
+# one noisy provider (SRX screens) can fill a whole unfiltered page and hide the others' alerts: ask per provider
 ALERT_PROVIDERS = ("juniper", "paloalto", "unifi")
 DENY_LIMIT = 1000
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -98,20 +98,28 @@ def build_report(run: dict) -> str:
     if groups:
         total = sum(group["count"] for group in groups)
         lines.append(f"Alerts: {total} in {len(groups)} groups" + (" (SSDF row limit hit, counts are a floor)" if run["alerts_truncated"] else ""))
-    for group in groups[:SHOWN]:
+    # a new signature is always shown: it is recorded as known tonight, so it never gets a second 🆕
+    shown = [group for position, group in enumerate(groups) if group["signature"] in new or position < SHOWN]
+    for group in shown:
         lines.append(f"{'🆕 ' if group['signature'] in new else ''}{group['severity']} ×{group['count']} "
                      f"{safe(group['observer'], 40)}: {safe(group['signature'])}")
-    if len(groups) > SHOWN:
-        lines.append(f"+{len(groups) - SHOWN} more groups")
+    if len(groups) > len(shown):
+        lines.append(f"+{len(groups) - len(shown)} more groups")
+    if run["alerts_truncated"]:
+        lines.append(f"⚠️ alerts capped at {ALERT_LIMIT} per provider: counts are a floor and some alerts are not listed")
+    if run["denied_total"]:
+        lines.append(f"Denied flows: {run['denied_total']}"
+                     + (f" (rankings use only the newest {DENY_LIMIT} per action: a sample)" if run["denied_truncated"] else "")
+                     + (f", {run['denied_unranked']} without an IPv4 address (IPv6) not ranked" if run["denied_unranked"] else ""))
     for label, side in (("sources", "denied_src"), ("destinations", "denied_dst")):
         if run[side]:
-            lines.append(f"Top denied {label} ({run['denied_total']}{'+' if run['denied_truncated'] else ''} denies): " + ", ".join(f"{safe(address, 45)} ×{count}" for address, count in run[side]))
+            lines.append(f"Top denied {label}: " + ", ".join(f"{safe(address, 45)} ×{count}" for address, count in run[side]))
     lines += recent_quiet[:SHOWN]
     if len(recent_quiet) > SHOWN:
         lines.append(f"🔇 +{len(recent_quiet) - SHOWN} more quiet")
     if long_quiet:
         lines.append(f"Quiet over {LONG_QUIET_HOURS // 24} days (info, flagged before): {', '.join(long_quiet)}")
-    if not (groups or run["denied_src"] or recent_quiet):
+    if not (groups or run["alerts_truncated"] or run["denied_total"] or recent_quiet):
         lines.append("✅ no alerts, no denies, every firewall is logging")
     return "\n".join(lines)
 
@@ -120,16 +128,21 @@ def collect(call, now: float, known: dict, baseline: bool) -> tuple[dict, dict]:
     """Query SSDF and return (run, known'). call(tool, arguments) returns one raw tool reply."""
     alert_replies = [checked("recent_alerts", call("recent_alerts", {"since": "now-24h", "min_severity": "medium", "providers": provider,
                                                                       "limit": ALERT_LIMIT})) for provider in ALERT_PROVIDERS]
-    denied = checked("query_flows", call("query_flows", {"action": DENY_ACTION, "since": "now-24h", "limit": DENY_LIMIT}))
+    denied_replies = [checked("query_flows", call("query_flows", {"action": action, "since": "now-24h", "limit": DENY_LIMIT}))
+                      for action in DENY_ACTIONS]
+    denied_rows = [row for reply in denied_replies for row in reply["rows"]]
     ingest = checked("ingest_status", call("ingest_status", {}))
     fabric = checked("fabric_status", call("fabric_status", {}))
     groups = group_alerts([row for reply in alert_replies for row in reply["rows"]])
     new, known = classify_signatures(groups, known, now, baseline)
     run = {"at": now, "baseline": baseline, "alerts": groups, "new": sorted(new), 
-           # SSDF flags truncated on an empty page too: only a full page is a real cut-off
-           "alerts_truncated": any(reply["row_count"] >= ALERT_LIMIT for reply in alert_replies),
-           "denied_src": top_denied(denied["rows"], "source_ip"), "denied_dst": top_denied(denied["rows"], "destination_ip"),
-           "denied_total": denied["row_count"], "denied_truncated": denied["row_count"] >= DENY_LIMIT,
+           # truncated: the matching rows reached the limit
+           "alerts_truncated": any(reply["truncated"] for reply in alert_replies),
+           "denied_src": top_denied(denied_rows, "source_ip"), "denied_dst": top_denied(denied_rows, "destination_ip"),
+           "denied_total": sum(reply["row_count"] for reply in denied_replies),
+           "denied_truncated": any(reply["truncated"] for reply in denied_replies),
+           # IPv6 flows have no source_ip/destination_ip (Nullable(IPv4)), so they cannot be ranked
+           "denied_unranked": sum(1 for row in denied_rows if not row.get("source_ip")),
            "ingest": ingest, "fabric": fabric}
     return run, known
 
