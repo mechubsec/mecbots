@@ -24,16 +24,8 @@ def mcp_endpoint(server_name: str) -> tuple[str, dict]:
     return server["url"], {key: expand(value) for key, value in (server.get("headers") or {}).items()}
 
 
-def mcp_server_info(server_name: str) -> dict:
-    """The server's initialize reply serverInfo ({name, version, ...}), without calling any tool."""
-    info = {}
-    mcp_call_tools(server_name, [], info)
-    return info
-
-
-def mcp_call_tools(server_name: str, calls: list[tuple[str, dict]], server_info: dict | None = None) -> list:
-    """Open one MCP session and return the parsed JSON text result of each (tool, arguments) call.
-    server_info, when given, is filled with the initialize reply's serverInfo."""
+def mcp_call_tools(server_name: str, calls: list[tuple[str, dict]]) -> list:
+    """Open one MCP session and return the parsed JSON text result of each (tool, arguments) call."""
     url, auth_headers = mcp_endpoint(server_name)
     base_headers = {**auth_headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
     session_id = None
@@ -62,9 +54,7 @@ def mcp_call_tools(server_name: str, calls: list[tuple[str, dict]], server_info:
         return json.loads(events[-1])
 
     try:
-        init = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "labbots", "version": "1"}})
-        if server_info is not None:
-            server_info.update((init or {}).get("result", {}).get("serverInfo") or {})
+        rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "labbots", "version": "1"}})
         rpc("notifications/initialized", notify=True)
         results = []
         for tool, arguments in calls:
