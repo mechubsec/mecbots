@@ -56,7 +56,9 @@ def test_commit_check_outcomes(monkeypatch):
     reply = {"success": True}
     assert collect.commit_check(["set a b"]) == ("pass", "")
     assert calls[0][0][0] == "commit_check_config" and calls[0][0][1]["device"] == collect.DEVICE
-    reply = {"success": False, "error": "netconf error: RPC error: server error: [OperationFailed] \nMissing mandatory statement: 'then'\n"}
+    reply = {"success": False, "outcome": "check_failed", "error": "netconf error: RPC error: server error: [LockDenied]"}
+    assert collect.commit_check(["set a b"])[0] == "error"  # inconclusive: neither a rejection nor a pass
+    reply = {"success": False, "outcome": "invalid", "error": "netconf error: RPC error: server error: [OperationFailed] \nMissing mandatory statement: 'then'\n"}
     assert collect.commit_check(["set a b"]) == ("fail", "Missing mandatory statement: 'then'")
 
     def refused(server, tool_calls):
@@ -85,11 +87,11 @@ def test_changes_since_yesterday():
 
 def test_report_diff_notes_and_not_covered():
     now = 1_800_000_000.0
-    state = {"run": {"at": now, "results": {"srx-nat": result("fail", "h2", "new"), "srx-ips": result("pass")}},
+    state = {"run": {"at": now, "complete": True, "planned": ["srx-nat", "srx-ips"], "results": {"srx-nat": result("fail", "h2", "new"), "srx-ips": result("pass")}},
              "previous": {"results": {"srx-nat": result("pass"), "srx-ips": result("pass")}}}
     text = report.build_report(state, now + 3600, ["srx-ips", "srx-mnha", "srx-nat"])
     assert "🔴 newly failing: srx-nat (skill edited) (model changed)" in text
-    assert "🟢 srx-ips (4 lines)" in text and "Not covered (needs two nodes or hardware): srx-mnha" in text
+    assert "🟢 srx-ips (4 lines)" in text and "No task: srx-mnha" in text
     assert "first night" in report.build_report({"run": state["run"]}, now, [])
     assert "no collect run" in report.build_report({}, now, [])
 
@@ -105,3 +107,12 @@ def test_find_syntax_error_line_stops_at_first_and_caps():
     assert collect.find_syntax_error_line(lines, fake) == "set b bad" and checked == ["set a 1", "set b bad"]
     assert collect.find_syntax_error_line(["set x"] * 5 + ["set bad"], fake, limit=5) is None
     assert collect.find_syntax_error_line(["set ok"], fake) is None
+
+
+def test_partial_run_is_flagged_and_unexecuted_tasks_are_not_no_task():
+    now = 1_800_000_000.0
+    run = {"at": now, "complete": False, "planned": ["srx-nat", "srx-ips"], "results": {"srx-nat": result("pass")}}
+    text = report.build_report({"run": run}, now, ["srx-ips", "srx-mnha", "srx-nat"])
+    assert "⚠️ collect did not finish (1 of 2 tasks)" in text and "No task: srx-mnha" in text
+    assert "srx-ips" not in text
+    assert "did not finish" not in report.build_report({"run": {**run, "complete": True}}, now, [])

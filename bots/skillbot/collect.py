@@ -92,7 +92,8 @@ def commit_check(lines: list[str]) -> tuple[str, str]:
         return "error", f"{type(exc).__name__}: {str(exc)[:150]}"
     if reply.get("success"):
         return "pass", ""
-    return "fail", first_error(str(reply.get("error", "")))
+    # outcome "check_failed" = the server reached no verdict: neither a rejection nor a pass
+    return ("error" if reply.get("outcome") == "check_failed" else "fail"), first_error(str(reply.get("error", "")))
 
 
 def find_syntax_error_line(lines: list[str], is_syntax_failure, limit: int = MAX_LINE_CHECKS) -> str | None:
@@ -143,11 +144,13 @@ def main() -> int:
         # a second run on the same day replaces today's, so yesterday stays yesterday's
         if state.get("run") and state["run"]["day"] != today:
             state["previous"] = state["run"]
-        run = {"at": time.time(), "day": today, "results": {}}
+        run = {"at": time.time(), "day": today, "results": {}, "planned": list(TASKS), "complete": False}
         for skill, task in TASKS.items():
             run["results"][skill] = run_task(skill, task)
             state["run"] = run
             STATE.write_text(json.dumps(state, indent=1))
+        run["complete"] = True  # only a finished loop; a killed collect leaves a run the report calls partial
+        STATE.write_text(json.dumps(state, indent=1))
     print("REPORT START\nREPORT END")
     return 0
 
