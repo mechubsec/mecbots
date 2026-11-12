@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: skill regression report
+
+[Timer]
+OnCalendar=*-*-* 09:35:00
+Persistent=true
+Unit=labbot@skillbot.service
+
+[Install]
+WantedBy=timers.target
