@@ -5,6 +5,7 @@
 #   claude|codex|hermes  name  version  sha256-of-SKILL.md      (version "-" when SKILL.md has none)
 #   gstack               -     VERSION  git HEAD short sha       (the suite counts once, not per skill)
 #   plugin               name  version  commit sha               (Claude plugins)
+#   ok                   collector  1                        (always last: the run completed)
 # Claude skills that are symlinks into the gstack checkout belong to the gstack line.
 set -uo pipefail
 export LC_ALL=C
@@ -60,4 +61,6 @@ for key, installs in json.load(open(sys.argv[1])).get("plugins", {}).items():
 PY
 fi
 
+# last line: an empty inventory from a reachable host is "ok", not "unreachable" (parse_inventory skips it)
+printf 'ok\tcollector\t1\n'
 exit 0

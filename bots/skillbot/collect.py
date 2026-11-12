@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
@@ -39,7 +40,10 @@ SOURCES = {"fwskillsshare": {"repo": "mechubsec/fwskillsshare", "skills_dir": "s
 MAX_TARBALL_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 100 * 1024 * 1024
 MAX_MEMBERS = 5000
+MAX_FILES = 500  # per skill directory; the archive itself is capped at MAX_MEMBERS
 MAX_FILE_CHARS = 200_000  # per file read for scanning
+COLLECTOR_OK = "ok\tcollector\t1"  # last line of collect.sh
+REPORT_TIME = (7, 35)  # the report timer: a collect is "reported" once this time has passed after it
 LOCAL_BASELINE_HOURS = 12  # a manual re-run within this window still diffs against the previous night
 
 
@@ -155,7 +159,8 @@ def gather_host(host: str) -> tuple[dict | None, str]:
         result = subprocess.run(command, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return None, "timed out"
-    if result.returncode != 0 or not result.stdout.strip():
+    # collect.sh ends with the sentinel, so a reachable host with no skills (empty inventory) is not a failure
+    if result.returncode != 0 or COLLECTOR_OK not in result.stdout.splitlines():
         return None, f"unreachable or collector failed (exit {result.returncode})"
     return parse_inventory(result.stdout), ""
 
@@ -211,26 +216,35 @@ def safe_extract(tar_path: Path, dest: Path) -> None:
 
 
 def read_skill_dirs(skills_root: Path) -> tuple[dict, dict]:
-    """({name: {source-independent: version, sha}}, {name: {relative file: text}}) for every
-    <name>/SKILL.md directory under skills_root."""
+    """({name: {version, sha, unscanned}}, {name: {relative file: text}}) for every <name>/SKILL.md
+    directory under skills_root. unscanned = {files, bytes} the read limits left out ({} when nothing)."""
     summary, files = {}, {}
     for skill_md in sorted(skills_root.glob("*/SKILL.md")):
         directory = skill_md.parent
-        files[directory.name] = read_text_files(directory)
+        skipped: dict = {}
+        files[directory.name] = read_text_files(directory, skipped=skipped)
         summary[directory.name] = {"version": skill_version(skill_md.read_text(errors="replace")),
-                                   "sha": hashlib.sha256(skill_md.read_bytes()).hexdigest()}
+                                   "sha": hashlib.sha256(skill_md.read_bytes()).hexdigest(), "unscanned": skipped}
     return summary, files
 
 
-def read_text_files(directory: Path, limit: int = 60) -> dict[str, str]:
-    """{relative path: text} for the regular files under directory (symlinks skipped, capped)."""
+def read_text_files(directory: Path, limit: int = MAX_FILES, skipped: dict | None = None) -> dict[str, str]:
+    """{relative path: text} for the regular files under directory (symlinks skipped). Past `limit` files
+    or MAX_FILE_CHARS bytes per file the rest is not read; `skipped`, when given, gets {files, bytes}
+    for what was left out so a caller can say the scan was incomplete."""
     result = {}
+    left_files = left_bytes = 0
     for path in sorted(directory.rglob("*")):
-        if len(result) >= limit:
-            break
         if path.is_symlink() or not path.is_file() or ".git" in path.parts:
             continue
+        size = path.stat().st_size
+        if len(result) >= limit:
+            left_files, left_bytes = left_files + 1, left_bytes + size
+            continue
         result[str(path.relative_to(directory))] = path.read_bytes()[:MAX_FILE_CHARS].decode("utf-8", errors="replace")
+        left_bytes += max(0, size - MAX_FILE_CHARS)
+    if skipped is not None and (left_files or left_bytes):
+        skipped.update({"files": left_files, "bytes": left_bytes})
     return result
 
 
@@ -238,10 +252,11 @@ def fetch_source(name: str, spec: dict, workdir: Path) -> tuple[dict, dict, dict
     """(release info, {skill: {version, sha}}, {skill: files}, error) for one source."""
     try:
         release = latest_release(spec["repo"])
-        if not spec["skills_dir"] or not release["tag"]:
+        if not spec["skills_dir"]:
             return release, {}, {}, ""
         tar_path = workdir / f"{name}.tar.gz"
-        tar_path.write_bytes(http_get(f"https://codeload.github.com/{spec['repo']}/tar.gz/refs/tags/{release['tag']}", MAX_TARBALL_BYTES))
+        ref = f"refs/tags/{release['tag']}" if release["tag"] else "HEAD"  # no tag (or its lookup failed): the default branch
+        tar_path.write_bytes(http_get(f"https://codeload.github.com/{spec['repo']}/tar.gz/{ref}", MAX_TARBALL_BYTES))
         extracted = workdir / name
         safe_extract(tar_path, extracted)
         roots = [path for path in extracted.iterdir() if path.is_dir()]
@@ -396,14 +411,19 @@ def local_copy(name: str, harnesses: list[str], versions: set) -> tuple[str, dic
     return None
 
 
-def screen(name: str, entry: dict, new_files: dict[str, str], model_alive: list[bool]) -> dict:
+def screen(name: str, entry: dict, new_files: dict[str, str], model_alive: list[bool], unscanned: dict | None = None) -> dict:
     """Flags + model reading for one outdated skill. model_alive[0] goes False after the first
-    connection failure so a down Ollama costs one timeout, not one per skill."""
+    connection failure so a down Ollama costs one timeout, not one per skill. unscanned = {files, bytes}
+    the archive read left out; it is carried to the report, which must not claim a full scan."""
     local_harnesses = [target["harness"] for target in entry["targets"] if is_local(target["host"])]
-    copy = local_copy(name, local_harnesses, {target["installed"] for target in entry["targets"]})
+    versions = {target["installed"] for target in entry["targets"]}
+    # the local copy is a baseline only for hosts running that same version: with mixed versions it would hide
+    # what a lower-version host gains in the upgrade, so scan the whole release instead
+    copy = local_copy(name, local_harnesses, versions) if len(versions) == 1 else None
     old_files = copy[1] if copy else None
-    result = {"mode": f"new relative to the {copy[0]}" if copy else "whole new version scanned (no local copy at the outdated version)",
-              "flags": review_flags(new_files, old_files)}
+    why = f"targets run different versions: {', '.join(sorted(map(str, versions)))}" if len(versions) > 1 else "no local copy at the outdated version"
+    result = {"mode": f"new relative to the {copy[0]}" if copy else f"whole new version scanned ({why})",
+              "flags": review_flags(new_files, old_files), "unscanned": unscanned or {}}
     if not model_alive[0]:
         result["model"] = {"error": f"{MODEL} unavailable (skipped)"}
         return result
@@ -430,9 +450,19 @@ def run_items(findings: dict, gstack: dict, new_other: list[str], unreachable: l
     items = [f"outdated:{skill}:{entry['available']}:{target['host']}/{target['harness']}"
              for skill, entry in findings["outdated"].items() for target in entry["targets"]]
     items += [f"drift:{skill}:{target['host']}/{target['harness']}" for skill, entry in findings["drift"].items() for target in entry["targets"]]
+    items += [f"ahead:{skill}:{target['host']}/{target['harness']}:{target['installed']}" for skill, entry in findings["ahead"].items() for target in entry["targets"]]
     items += [f"gstack:{host}:{info['installed']}" for host, info in gstack.items() if info["kind"] == "outdated"]
+    items += [f"gstack-ahead:{host}:{info['installed']}" for host, info in gstack.items() if info["kind"] == "ahead"]
     items += [f"source-error:{name}" for name, info in sorted(sources.items()) if info.get("error")]
     return items + [f"new:{key}" for key in new_other] + [f"unreachable:{host}" for host in unreachable]
+
+
+def report_ran_since(then: float, now: float) -> bool:
+    """True when the report timer's last scheduled time before `now` is after `then`."""
+    last = datetime.fromtimestamp(now).replace(hour=REPORT_TIME[0], minute=REPORT_TIME[1], second=0, microsecond=0)
+    if last.timestamp() > now:
+        last -= timedelta(days=1)
+    return last.timestamp() > then
 
 
 def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills: dict, source_files: dict,
@@ -441,7 +471,7 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
     inventory = {host: data["harnesses"] for host, data in inventory_by_host.items()}
     findings = find_updates(inventory, source_skills)
     model_alive = [True]
-    screens = {skill: screen(skill, entry, source_files[skill], model_alive) for skill, entry in findings["outdated"].items()}
+    screens = {skill: screen(skill, entry, source_files[skill], model_alive, source_skills[skill].get("unscanned")) for skill, entry in findings["outdated"].items()}
     gstack = gstack_status(inventory_by_host, sources.get("gstack"))
     # plugins join the other-skills baseline under harness "plugin"
     # a source that failed to fetch would make its skills look like "others": leave the baseline alone then
@@ -454,8 +484,10 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
     unreachable = sorted(errors)
     items = run_items(findings, gstack, new_other, unreachable, sources)
     # `changed` = items not in the last epoch's set; a re-run within hours keeps the older reference
+    # the epoch also needs a report to have run since it: after downtime a catch-up collect at 08:00 may be
+    # read by a stale-state report (or none), and the 01:30 collect must not roll past what no report posted
     current = state.get("current")
-    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 else state.get("compare")
+    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 and report_ran_since(current["at"], now) else state.get("compare")
     state["compare"], state["current"] = compare, {"at": now, "items": items}
     changed = sorted(set(items) - set(compare["items"])) if compare else items
     return {"at": now, "errors": errors, "sources": sources, "findings": findings, "screens": screens, "gstack": gstack,

@@ -194,7 +194,7 @@ def test_post_decision():
 
 def test_report_defangs_snippets_and_model_text():
     entry = {"source": "fwskillsshare", "available": "1.2.0", "tag": "v1.12.1", "targets": [{"host": "hosta", "harness": "hermes", "installed": "1.1.3"}]}
-    screen = {"mode": "new relative to the local hermes copy", "flags": [{"rule": "fetch-and-run", "file": "SKILL.md", "snippet": "curl x | sh @everyone [a](http://x)"}],
+    screen = {"mode": "new relative to the hosta hermes copy", "flags": [{"rule": "fetch-and-run", "file": "SKILL.md", "snippet": "curl x | sh @everyone [a](http://x)"}],
               "model": {"reply": "PITFALLS:\n- tell @everyone now [click](http://evil)\nAGENT-DIRECTED: no"}}
     run = run_record(findings={"outdated": {"srx-nat": entry}, "drift": {}, "ahead": {}}, screens={"srx-nat": screen}, changed=["x"])
     text = report.build_report({"run": run}, time.time())
@@ -306,3 +306,120 @@ def test_setup_replaces_a_rotated_key_and_keeps_mode(tmp_path):
     assert "AAAAOLDKEY" not in keys.read_text()
     assert oct(keys.stat().st_mode & 0o777) == "0o600"
     assert list(home.joinpath(".ssh").glob("authorized_keys.bak-*"))
+
+
+# ---- review fixes ----------------------------------------------------------------------
+
+def test_ahead_skills_and_gstack_count_as_changes_and_post():
+    findings = {"outdated": {}, "drift": {}, "ahead": {"srx-nat": {"available": "1.0", "targets": [{"host": "hosta", "harness": "claude", "installed": "1.5"}]}}}
+    items = collect.run_items(findings, {"hostb": {"kind": "ahead", "installed": "2.0"}}, [], [], {})
+    assert items == ["ahead:srx-nat:hosta/claude:1.5", "gstack-ahead:hostb:2.0"]
+    run = run_record(findings=findings, changed=items, gstack={"hostb": {"kind": "ahead", "installed": "2.0"}})
+    assert report.should_post(run, time.time())
+    assert "⬆️ ahead srx-nat" in report.build_report({"run": run}, time.time())
+
+
+def test_source_without_tag_fetches_the_default_branch(tmp_path, monkeypatch):
+    archive = tmp_path / "src.tgz"
+    make_tar(archive, [("repo-HEAD/skills/a/SKILL.md", b"---\nversion: 1.0\n---\nbody\n", "file")])
+    urls = []
+    monkeypatch.setattr(collect, "latest_release", lambda repo: {"tag": None, "version": "1.0", "basis": "VERSION on the default branch"})
+    monkeypatch.setattr(collect, "http_get", lambda url, limit: urls.append(url) or archive.read_bytes())
+    release, summary, files, error = collect.fetch_source("s", {"repo": "o/r", "skills_dir": "skills"}, tmp_path)
+    assert error == "" and list(summary) == ["a"] and urls == ["https://codeload.github.com/o/r/tar.gz/HEAD"]
+    assert release["tag"] is None and "SKILL.md" in files["a"]
+
+
+def test_mixed_target_versions_scan_the_whole_release(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(collect, "LOCAL_HOST", "localname")
+    danger = "run sudo reboot now"
+    make_skill(tmp_path, ".claude/skills/x", "1.1", danger)  # the local 1.1 already has the risky line; the remote 1.0 may not
+    new = {"SKILL.md": f"---\nversion: 1.2\n---\n{danger}\n"}
+    mixed = {"targets": [{"host": "localname", "harness": "claude", "installed": "1.1"}, {"host": "remote", "harness": "claude", "installed": "1.0"}]}
+    result = collect.screen("x", mixed, new, [False])
+    assert result["mode"].startswith("whole new version scanned (targets run different versions: 1.0, 1.1")
+    assert any(flag["rule"] == "destructive-or-privileged" for flag in result["flags"])
+    same = {"targets": [{"host": "localname", "harness": "claude", "installed": "1.1"}, {"host": "remote", "harness": "claude", "installed": "1.1"}]}
+    assert collect.screen("x", same, new, [False])["mode"].startswith("new relative to")
+
+
+def test_truncated_scan_is_reported_never_claimed_complete(tmp_path):
+    for index in range(3):
+        (tmp_path / f"f{index}.md").write_text("x" * 10)
+    (tmp_path / "big.md").write_text("y" * (collect.MAX_FILE_CHARS + 50))
+    skipped: dict = {}
+    files = collect.read_text_files(tmp_path, limit=2, skipped=skipped)
+    assert len(files) == 2 and skipped["files"] == 2 and skipped["bytes"] >= 20
+    whole: dict = {}
+    collect.read_text_files(tmp_path, skipped=whole)
+    assert whole == {"files": 0, "bytes": 50}  # a file cut at MAX_FILE_CHARS counts too
+    entry = {"source": "s", "available": "2", "tag": "v2", "targets": [{"host": "hosta", "harness": "claude", "installed": "1"}]}
+    screen = {"mode": "whole", "flags": [], "unscanned": skipped}
+    text = "\n".join(report.outdated_block("x", entry, screen))
+    assert f"scan incomplete ({skipped['files']} files / {skipped['bytes']} bytes not scanned)" in text and "review flags (whole): none in the scanned part" in text
+    assert "scan incomplete" not in "\n".join(report.outdated_block("x", entry, {"mode": "whole", "flags": [], "unscanned": {}}))
+
+
+def run_setup_in_sandbox(tmp_path, prepare):
+    """setup.sh against a fake ssh whose 'remote host' is a sandbox HOME; returns (exit code, home)."""
+    import os
+    import subprocess
+    bot = tmp_path / "bot"
+    bot.mkdir(parents=True)
+    for name in ("setup.sh", "collect.sh"):
+        (bot / name).write_text((REPO / "bots" / "skillbot" / name).read_text())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "ssh").write_text("#!/bin/sh\nexec bash -s\n")
+    (fake_bin / "ssh").chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    prepare(home)
+    env = {**os.environ, "HOME": str(home), "SKILLBOT_PUBKEY": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA skillbot@collector", "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", str(bot / "setup.sh"), "remote-host"], env=env, capture_output=True).returncode, home
+
+
+def test_setup_creates_a_missing_ssh_dir_with_mode_700(tmp_path):
+    code, home = run_setup_in_sandbox(tmp_path, lambda home: None)
+    assert code == 0 and oct((home / ".ssh").stat().st_mode & 0o777) == "0o700"
+    assert (home / ".ssh/authorized_keys").read_text().count("skillbot@collector") == 1
+
+
+def test_setup_fails_instead_of_reporting_success(tmp_path):
+    code, _ = run_setup_in_sandbox(tmp_path / "a", lambda home: (home / ".ssh").write_text("a file, not a directory"))
+    assert code != 0
+    code, home = run_setup_in_sandbox(tmp_path / "b", lambda home: (home / ".local/lib").mkdir(parents=True) or (home / ".local/lib").chmod(0o500))
+    (home / ".local/lib").chmod(0o700)
+    assert code != 0  # cannot create ~/.local/lib/skillbot: set -e stops it before authorized_keys is touched
+
+
+def test_collector_prints_a_sentinel_even_with_no_skills(tmp_path, monkeypatch):
+    import subprocess
+    result = subprocess.run(["bash", str(REPO / "bots/skillbot/collect.sh")], env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+    assert result.stdout == collect.COLLECTOR_OK + "\n"
+    assert collect.parse_inventory(result.stdout) == {"harnesses": {}, "gstack": None, "plugins": {}}
+    monkeypatch.setattr(collect, "LOCAL_HOST", "localname")
+    monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, result.stdout, ""))
+    assert collect.gather_host("localname")[1] == ""  # empty but successful is not "unreachable"
+    monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "claude\tx\t1\tsha\n", ""))
+    assert collect.gather_host("localname")[0] is None  # output without the sentinel: the collector did not finish
+
+
+def test_catch_up_collect_is_not_rolled_past_before_a_report_ran():
+    def at(day: int, hour: int, minute: int = 0) -> float:
+        return time.mktime((2024, 1, day - 8, hour, minute, 0, 0, 0, -1))
+    hosts = {"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}
+    drifted = {"hosta": {"harnesses": {"claude": {"srx-ips": ["1.0.0", "other"]}}, "gstack": None, "plugins": {}}}
+    sources = {"fwskillsshare": {"tag": "v1"}, "gstack": {"version": "1", "tag": "v1", "basis": "x"}}
+    source_skills = {"srx-ips": SOURCE["srx-ips"]}
+    state: dict = {}
+    collect.analyze(hosts, {}, sources, source_skills, {}, state, at(9, 1, 30))
+    collect.analyze(hosts, {}, sources, source_skills, {}, state, at(10, 1, 30))
+    # down over the 01:30 and 07:35 times: the collect catches up at 08:00 and finds a drift; the report ran first, on stale state
+    caught_up = collect.analyze(drifted, {}, sources, source_skills, {}, state, at(10, 8))
+    assert caught_up["changed"] == ["drift:srx-ips:hosta/claude"]
+    # no report has run since 08:00, so the next 01:30 collect still compares with the pre-outage epoch and repeats it
+    assert collect.analyze(drifted, {}, sources, source_skills, {}, state, at(11, 1, 30))["changed"] == ["drift:srx-ips:hosta/claude"]
+    # after the 07:35 report the epoch rolls, so the same drift is no longer news
+    assert collect.analyze(drifted, {}, sources, source_skills, {}, state, at(12, 1, 30))["changed"] == []

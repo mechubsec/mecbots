@@ -63,7 +63,10 @@ def outdated_block(skill: str, entry: dict, screen: dict | None) -> list[str]:
     grouped: dict[tuple[str, str], list[str]] = {}  # one line per source line, listing every rule it tripped
     for flag in screen["flags"]:
         grouped.setdefault((flag["file"], flag["snippet"]), []).append(flag["rule"])
-    lines.append(f"  review flags ({defang(screen['mode'], 70)}): " + (str(len(screen["flags"])) if grouped else "none"))
+    unscanned = screen.get("unscanned") or {}
+    lines.append(f"  review flags ({defang(screen['mode'], 70)}): " + (str(len(screen["flags"])) if grouped else ("none in the scanned part" if unscanned else "none")))
+    if unscanned:
+        lines.append(f"  ⚠️ scan incomplete ({unscanned.get('files', 0)} files / {unscanned.get('bytes', 0)} bytes not scanned)")
     lines += [f"  🚩 {', '.join(rules)} in {defang(file, 40)}: `{defang(snippet, 100)}`" for (file, snippet), rules in list(grouped.items())[:FLAGS_SHOWN]]
     if len(grouped) > FLAGS_SHOWN:
         lines.append(f"  🚩 +{len(grouped) - FLAGS_SHOWN} more flagged lines")
@@ -122,8 +125,8 @@ def build_report(state: dict, now: float) -> str:
             lines.append(f"⚠️ {source}: source fetch failed: {defang(info['error'], 100)}")
     for source in ("fwskillsshare",):
         info = run["sources"].get(source) or {}
-        if findings["outdated"] and info.get("tag"):
-            lines.append(f"**{source}** latest {defang(info['tag'], 20)} ({defang(info['basis'], 40)})")
+        if findings["outdated"] and info.get("version"):
+            lines.append(f"**{source}** latest {defang(info['tag'] or info['version'], 20)} ({defang(info['basis'], 40)})")
     for skill, entry in sorted(findings["outdated"].items()):
         lines += outdated_block(skill, entry, run["screens"].get(skill))
     lines += gstack_lines(run)
