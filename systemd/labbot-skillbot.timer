@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: skill update report
+
+[Timer]
+OnCalendar=*-*-* 07:35:00
+Persistent=true
+Unit=labbot@skillbot.service
+
+[Install]
+WantedBy=timers.target
