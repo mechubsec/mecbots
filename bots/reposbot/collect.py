@@ -1,4 +1,4 @@
-"""skillbot collect (nightly): for each task in tasks.py, give the local model the skill's SKILL.md plus the task and ask
+"""reposbot collect (nightly): for each task in tasks.py, give the local model the skill's SKILL.md plus the task and ask
 for Junos set commands only, then run them through `commit check` on a lab vSRX. Nothing is committed.
 Posts nothing; the morning report reads what this saves. A regression rig: does skill + task still yield config
 that a real vSRX accepts?
@@ -21,13 +21,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp import mcp_call_tools  # noqa: E402
 from tasks import FACTS, TASKS  # noqa: E402
 
-DEVICE = os.environ.get("SKILLBOT_DEVICE", "lab-vsrx")  # the one device name in the Junos MCP inventory skillbot may address
-MCP_SERVER = os.environ.get("SKILLBOT_MCP", "junos")  # Junos MCP server name in the Hermes config
+DEVICE = os.environ.get("REPOSBOT_DEVICE", "lab-vsrx")  # the one device name in the Junos MCP inventory reposbot may address
+MCP_SERVER = os.environ.get("REPOSBOT_MCP", "junos")  # Junos MCP server name in the Hermes config
 ALLOWED_TOOLS = {"commit_check_config"}  # a check discards its own candidate
-SKILLS_DIR = Path(os.environ.get("SKILLBOT_SKILLS_DIR", Path.home() / ".hermes/skills/devops"))  # <skill>/SKILL.md per task
-STATE = Path.home() / ".local/state/labbots/skillbot.json"
+SKILLS_DIR = Path(os.environ.get("REPOSBOT_SKILLS_DIR", Path.home() / ".hermes/skills/devops"))  # <skill>/SKILL.md per task
+STATE = Path.home() / ".local/state/labbots/reposbot.json"
 OLLAMA_URL = os.environ.get("LABBOTS_OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.environ.get("SKILLBOT_MODEL", "qwen3-coder-next:latest")
+MODEL = os.environ.get("REPOSBOT_MODEL", "qwen3-coder-next:latest")
 MAX_LINE_CHECKS = 60  # extra single-line checks when a whole config fails with a bare syntax error
 SET_LINE = re.compile(r'^set [\w ./:\-"*,\[\]@]+$')
 # a commit check does not apply these, but the blast radius stays zero anyway
@@ -37,9 +37,9 @@ SYSTEM_PROMPT = ("You write Juniper Junos configuration. Follow the skill below.
 
 
 def assert_device(device: str | None) -> None:
-    """Raise unless the device is the one lab device skillbot may touch."""
+    """Raise unless the device is the one lab device reposbot may touch."""
     if device != DEVICE:
-        raise ValueError(f"skillbot may only address {DEVICE}, not {device!r}")
+        raise ValueError(f"reposbot may only address {DEVICE}, not {device!r}")
 
 
 def extract_set_lines(text: str) -> tuple[list[str], list[str]]:

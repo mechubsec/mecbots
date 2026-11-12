@@ -1,4 +1,4 @@
-"""skillbot report (morning): what the nightly collect found. Per SRX skill, whether a local model's config for a concrete task
+"""reposbot report (morning): what the nightly collect found. Per SRX skill, whether a local model's config for a concrete task
 passed `commit check` on the lab vSRX, the first error for failures, what changed since the previous night, and skills with no task."""
 
 import json
@@ -8,8 +8,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-STATE = Path.home() / ".local/state/labbots/skillbot.json"
-SKILLS_DIR = Path(os.environ.get("SKILLBOT_SKILLS_DIR", Path.home() / ".hermes/skills/devops"))
+STATE = Path.home() / ".local/state/labbots/reposbot.json"
+SKILLS_DIR = Path(os.environ.get("REPOSBOT_SKILLS_DIR", Path.home() / ".hermes/skills/devops"))
 STALE_SECONDS = 20 * 3600
 ICONS = {"pass": "🟢", "fail": "🔴", "error": "❓"}
 
@@ -27,12 +27,12 @@ def build_report(state: dict, now: float, all_skills: list[str]) -> str:
     """The finished Discord report; all_skills are the srx-* skills that exist, for the no-task list."""
     run = state.get("run")
     if not run or now - run["at"] > STALE_SECONDS:
-        return "**skillbot**\n❓ no collect run in the last 20h: check `labbot@skillbot.collect.service`"
+        return "**reposbot**\n❓ no collect run in the last 20h: check `labbot@reposbot.collect.service`"
     results = run["results"]
     previous = state.get("previous", {}).get("results", {})
     counts = {status: sum(1 for result in results.values() if result["status"] == status) for status in ICONS}
     models = sorted({result["model"] for result in results.values()})
-    lines = [f"**skillbot** ({datetime.fromtimestamp(run['at']):%d %b %H:%M}, {', '.join(models)}, commit check)",
+    lines = [f"**reposbot** ({datetime.fromtimestamp(run['at']):%d %b %H:%M}, {', '.join(models)}, commit check)",
              f"🟢 {counts['pass']} pass · 🔴 {counts['fail']} fail · ❓ {counts['error']} could not run"]
     planned = run.get("planned", list(results))
     if not run.get("complete"):

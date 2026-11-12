@@ -1,4 +1,4 @@
-"""skillbot task table: one self-contained task per SRX skill whose output can `commit check` on the
+"""reposbot task table: one self-contained task per SRX skill whose output can `commit check` on the
 standalone lab vSRX. Skills that need two nodes or hardware (mnha, chassis cluster,
 cluster-to-mnha, license maintenance, mnha builders) have no task and are listed as not covered."""
 

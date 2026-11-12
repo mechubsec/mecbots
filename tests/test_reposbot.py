@@ -1,4 +1,4 @@
-"""Checks for skillbot's output filtering, device guard and nightly diff. Run: python3 -m pytest tests"""
+"""Checks for reposbot's output filtering, device guard and nightly diff. Run: python3 -m pytest tests"""
 
 import importlib.util
 import sys
@@ -18,8 +18,8 @@ def load(name: str, path: Path):
     return module
 
 
-collect = load("skillbot_collect", REPO / "bots" / "skillbot" / "collect.py")
-report = load("skillbot_report", REPO / "bots" / "skillbot" / "report.py")
+collect = load("reposbot_collect", REPO / "bots" / "reposbot" / "collect.py")
+report = load("reposbot_report", REPO / "bots" / "reposbot" / "report.py")
 
 
 def test_extract_keeps_set_lines_and_ignores_prose():

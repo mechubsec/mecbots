@@ -4,7 +4,7 @@ Description=labbots: skill regression collect
 [Timer]
 OnCalendar=*-*-* 00:30:00
 Persistent=true
-Unit=labbot@skillbot.collect.service
+Unit=labbot@reposbot.collect.service
 
 [Install]
 WantedBy=timers.target
