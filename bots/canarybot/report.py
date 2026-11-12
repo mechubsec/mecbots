@@ -1,6 +1,6 @@
 """canarybot (release canary, hourly): when a mechubsec MCP repo's latest release has a Docker Hub
 image canarybot has not tried yet, boots it as a throwaway container (empty inventory, freshly minted
-token, loopback only), checks serverInfo.version against the tag and diffs the tool surface against
+token, loopback only), checks serverInfo.version against the tag and diffs the tool surface (the full registry, listed over stdio) against
 the previous release's. Posts once per new release; prints an empty report when nothing is new."""
 
 import contextlib
@@ -31,20 +31,9 @@ REPOS = {
 ORG = "mechubsec"  # GitHub org whose releases are canaried; the images are mechub/<repo> on Docker Hub
 DOCKER_TAG = "https://hub.docker.com/v2/repositories/mechub/{repo}/tags/{version}"
 USER_AGENT = "labbots/1"
-# A `*` token scope reaches read-only tools only (rustjunosmcp >= 0.10: 15 write tools are hidden from
-# tools/list; rustpanosmcp calls are refused). Write tools must be named, and `*` cannot be mixed with names,
-# so the canary mints a second token naming them and unions the two tool lists. Unknown names make
-# `token add` fail, which shows as a red canary when a release renames one.
-# shortcut: this list is copied from each repo's docs, so a brand-new write tool is not seen until it is
-# added here; upgrade if a server ever exposes its full registry to an admin scope.
-WRITE_TOOLS = {
-    "rustjunosmcp": ["add_device", "approve_junos_change_set", "create_junos_change_set", "execute", "manage_appid_signature_package",
-                     "reload_devices", "rollback_config", "upgrade_junos", "apply_junos_change_set", "confirm_junos_change_set",
-                     "discard_candidate", "load_and_commit_config", "manage_idp_security_package", "render_and_apply_j2_template", "transfer_file"],
-    "rustpanosmcp": ["apply_panos_change_set", "approve_panos_change_set", "commit_panos_candidate", "create_panos_change_set", "diff_panos_candidate",
-                     "discard_panos_candidate", "get_candidate_fingerprint", "get_panos_change_set", "get_panos_operation", "stage_panos_config",
-                     "validate_panos_candidate"],
-}
+# A `*` token scope reaches read-only tools only (rustjunosmcp >= 0.10 hides its write tools from tools/list,
+# rustpanosmcp refuses their calls), so the HTTP listing is incomplete. The stdio transport has no token and
+# lists the server's whole registry, which is what the tool-surface diff uses: no hand-kept write-tool table.
 STATE_FILE = Path.home() / ".local/state/labbots/canarybot.json"
 BOOT_TIMEOUT_SECONDS = 60
 PULL_TIMEOUT_SECONDS = 600
@@ -139,9 +128,24 @@ def mcp_tools(url: str, token: str) -> tuple[dict, list[dict]]:
             return info, tools
 
 
-def merge_tools(*tool_lists: list[dict]) -> list[dict]:
-    """Union of several tools/list results by tool name (the first copy of a name wins)."""
-    return list({tool["name"]: tool for tools in reversed(tool_lists) for tool in tools}.values())
+def parse_stdio_tools(stdout: str) -> list[dict]:
+    """The tools of the tools/list reply (JSON-RPC id 2) in a stdio server's output; [] when there is none."""
+    for line in stdout.splitlines():
+        with contextlib.suppress(ValueError):
+            reply = json.loads(line)
+            if isinstance(reply, dict) and reply.get("id") == 2:
+                return reply.get("result", {}).get("tools", [])
+    return []
+
+
+def stdio_tools(image: str, binary: str, workdir: Path, user: str, extra_flags: list[str]) -> list[dict]:
+    """Every tool the image registers: run it over stdio (no token, so no scope filtering) with no network."""
+    requests = [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "canarybot", "version": "1"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}]
+    ran = docker("run", "--rm", "-i", "--name", f"canarybot-stdio-{os.getpid()}", "--network", "none", "--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--user", user, "-e", "CANARY_KEY=unused",
+                 "-v", f"{workdir}:/cfg", "--entrypoint", f"/usr/local/bin/{binary}", image, "-f", "/cfg/devices.json", *extra_flags,
+                 timeout=BOOT_TIMEOUT_SECONDS, input="".join(json.dumps(request) + "\n" for request in requests))
+    return parse_stdio_tools(ran.stdout)
 
 
 def free_port() -> int:
@@ -189,7 +193,7 @@ def canary(repo: str, tag: str) -> tuple[str, float, dict[str, str], list[str]]:
         for subdir in ("leases", "staging"):
             (workdir / subdir).mkdir(mode=0o700)
         tokens.append(mint("canary", "*"))
-        tokens.append(mint("canary-write", ",".join(WRITE_TOOLS[repo])))
+        tools = stdio_tools(image, binary, workdir, user, extra_flags)  # before the HTTP server, which would hold the state/lease locks
         started = time.monotonic()
         with log_path.open("w") as log:
             container = subprocess.Popen(
@@ -198,26 +202,28 @@ def canary(repo: str, tag: str) -> tuple[str, float, dict[str, str], list[str]]:
                  "-f", "/cfg/devices.json", "--tokens-file", "/cfg/tokens.json", "-t", "streamable-http", "-H", "0.0.0.0", "-p", str(port),
                  "--allow-insecure-bind", "--allowed-host", f"127.0.0.1:{host_port}", "--allowed-origin", f"http://127.0.0.1:{host_port}", *extra_flags],
                 stdout=log, stderr=subprocess.STDOUT)
-        info, tool_lists, problem = {}, [], "did not answer MCP initialize within the boot timeout"
+        info, http_tools, problem = {}, [], "did not answer MCP initialize within the boot timeout"
         while time.monotonic() - started < BOOT_TIMEOUT_SECONDS:
             if container.poll() is not None:
                 problem = f"container exited with code {container.returncode} before answering"
                 break
             try:
-                results = [mcp_tools(f"http://127.0.0.1:{host_port}/mcp", token) for token in tokens]
-                info, tool_lists, problem = results[0][0], [tools for _, tools in results], ""
+                info, http_tools = mcp_tools(f"http://127.0.0.1:{host_port}/mcp", tokens[0])
+                problem = ""
                 break
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
                 time.sleep(0.5)
         boot_seconds = time.monotonic() - started
-        tools = merge_tools(*tool_lists)
-        problem = problem or verdict(tag, info.get("version")) or ("tools/list is empty" if not tools else "")
+        problem = problem or verdict(tag, info.get("version"))
+        # the HTTP `*` listing can only be a subset of the registry; anything else means the two views disagree
+        hidden = sorted({tool["name"] for tool in http_tools} - {tool["name"] for tool in tools})
+        problem = problem or ("tools/list is empty" if not tools else "") or (f"HTTP lists tools the registry does not: {', '.join(hidden)}" if hidden else "")
         return problem, boot_seconds, tool_digests(tools), scrubbed_log()
     except Exception as exc:  # a hung `token add`, malformed JSON/SSE, ...: one bad image must not sink the report
         return f"canary error: {type(exc).__name__}: {str(exc)[:200]}", time.monotonic() - started, {}, scrubbed_log()
     finally:
         with contextlib.suppress(Exception):
-            docker("rm", "-f", name)
+            docker("rm", "-f", name, f"canarybot-stdio-{os.getpid()}")
         if container:
             container.kill()
             container.wait()

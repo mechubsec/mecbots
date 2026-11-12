@@ -43,14 +43,24 @@ def test_format_result_failure_keeps_last_ten_log_lines():
     assert "baseline" in baseline
 
 
-def test_merge_tools_unions_read_and_write_lists():
-    merged = canarybot.merge_tools([tool("read_a"), tool("shared")], [tool("shared"), tool("write_b")])
-    assert sorted(t["name"] for t in merged) == ["read_a", "shared", "write_b"]
+def test_parse_stdio_tools_takes_the_tools_list_reply_and_ignores_log_noise():
+    out = 'INFO started\n{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{}}}\n{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"confirm_commit"}]}}\n'
+    assert canarybot.parse_stdio_tools(out) == [{"name": "confirm_commit"}]
+    assert canarybot.parse_stdio_tools("garbage\n") == []
 
 
-def test_every_repo_names_its_write_tools():
-    assert set(canarybot.WRITE_TOOLS) == set(canarybot.REPOS)  # a `*` token never sees them
-    assert "load_and_commit_config" in canarybot.WRITE_TOOLS["rustjunosmcp"]
+def test_no_hand_kept_write_tool_table():
+    assert not hasattr(canarybot, "WRITE_TOOLS")  # the registry comes from the image over stdio
+
+
+def test_stdio_tools_runs_the_image_without_network_or_token(monkeypatch, tmp_path):
+    seen = {}
+    def fake_docker(*args, **kwargs):
+        seen["args"], seen["input"] = args, kwargs["input"]
+        return canarybot.subprocess.CompletedProcess(args, 0, '{"id":2,"result":{"tools":[{"name":"a"},{"name":"b"}]}}\n', "")
+    monkeypatch.setattr(canarybot, "docker", fake_docker)
+    assert [t["name"] for t in canarybot.stdio_tools("img:1", "bin", tmp_path, "1:1", [])] == ["a", "b"]
+    assert "--network" in seen["args"] and "none" in seen["args"] and "tools/list" in seen["input"]
 
 
 def test_canary_turns_a_hung_docker_call_into_a_red_result(monkeypatch):
