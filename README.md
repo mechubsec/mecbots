@@ -1,7 +1,36 @@
-# mecbots
+<!-- brand:header:start -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mechub-mark.svg">
+    <img src="docs/assets/mechub-mark-light.svg" width="72" alt="mechub mark">
+  </picture>
+</p>
+
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mecbots-wordmark.svg">
+    <img src="docs/assets/mecbots-wordmark-light.svg" width="300" alt="mecbots">
+  </picture>
+</h1>
+
+<p align="center"><strong>Small, deterministic homelab bots that report to Discord</strong><br>
+<em>a mechub project — sovereign network-security automation</em></p>
+
+<p align="center"><img src="docs/assets/icons/mecbots.png" width="96" alt="mecbots mascot"></p>
+<!-- brand:header:end -->
 
 How to build small, deterministic homelab bots that report to Discord. This repo is a
 how-to with a runner and four example bots, not a product: copy what you need.
+
+| | Bot | Pattern |
+|---|---|---|
+| <img src="docs/assets/icons/hellobot.png" width="48" alt=""> | `hellobot` | the smallest bot; copy it to start yours |
+| <img src="docs/assets/icons/socbot.png" width="48" alt=""> | `socbot` | daily report with a new-versus-known state file |
+| <img src="docs/assets/icons/skillbot.png" width="48" alt=""> | `skillbot` | collect at night, report in the morning; a model writes, code validates |
+| <img src="docs/assets/icons/canarybot.png" width="48" alt=""> | `canarybot` | watcher: silent unless something changed |
+
+Each bot gets its own face. The icons were generated locally in one shared style, so a
+glance at the channel tells you which bot spoke.
 
 ## What a bot is
 
@@ -102,9 +131,18 @@ checks what the server reports, diffs its tool list against the previous release
 It always cleans up: the container and temp dir are removed in a `finally`. State records the
 last tag tried, so a failed canary is not retried every hour.
 
-Other bot ideas, each the same shape: disk space and backup freshness, certificate expiry,
-pending OS updates, log error patterns, WAN or public-address change, an address registry
-against what is really on the network, software versions against upstream releases.
+Other bots built the same way. Their code is not in this repo; the idea and the face are:
+
+| | Bot | Idea |
+|---|---|---|
+| <img src="docs/assets/icons/logbot.png" width="48" alt=""> | `logbot` | new error patterns in the logs, known ones as counts |
+| <img src="docs/assets/icons/certbot.png" width="48" alt=""> | `certbot` | the certificate each endpoint really serves, and its expiry |
+| <img src="docs/assets/icons/patchbot.png" width="48" alt=""> | `patchbot` | pending and applied OS updates |
+| <img src="docs/assets/icons/ipambot.png" width="48" alt=""> | `ipambot` | a WAN or public-address change; an address registry against what is really on the network |
+| <img src="docs/assets/icons/vrdcbot.png" width="48" alt=""> | `vrdcbot` | software versions against upstream releases |
+| <img src="docs/assets/icons/sprawlbot.png" width="48" alt=""> | `sprawlbot` | old snapshots and unused images worth cleaning up |
+
+Disk space and backup freshness is another good first bot.
 
 ## Discord setup, per bot
 
