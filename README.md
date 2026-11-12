@@ -17,6 +17,8 @@
 <em>a mechub project — sovereign network-security automation</em></p>
 
 <p align="center"><img src="docs/assets/icons/mecbots.png" width="96" alt="mecbots mascot"></p>
+
+<p align="center"><img alt="license" src="https://img.shields.io/badge/license-MIT-262B38"></p>
 <!-- brand:header:end -->
 
 How to build small, deterministic homelab bots that report to Discord. This repo is a
@@ -141,8 +143,7 @@ Other bots built the same way. Their code is not in this repo; the idea and the 
 | <img src="docs/assets/icons/ipambot.png" width="48" alt=""> | `ipambot` | a WAN or public-address change; an address registry against what is really on the network |
 | <img src="docs/assets/icons/vrdcbot.png" width="48" alt=""> | `vrdcbot` | software versions against upstream releases |
 | <img src="docs/assets/icons/sprawlbot.png" width="48" alt=""> | `sprawlbot` | old snapshots and unused images worth cleaning up |
-
-Disk space and backup freshness is another good first bot.
+| <img src="docs/assets/icons/diskbot.png" width="48" alt=""> | `diskbot` | disk space and backup freshness; a good first bot |
 
 ## Discord setup, per bot
 
@@ -228,3 +229,7 @@ public network access to GitHub and Docker Hub; its `REPOS` table lists the
 - **Keep the first run quiet.** Learn a baseline, then mark new things from the next run on.
 - **Keep prompts short and rules explicit.** A smaller model turns "background, not a task"
   into a task; pick a bigger model per bot with a drop-in when it matters.
+
+## License
+
+Licensed under [MIT](LICENSE).
