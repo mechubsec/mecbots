@@ -3,6 +3,7 @@ image canarybot has not tried yet, boots it as a throwaway container (empty inve
 token, loopback only), checks serverInfo.version against the tag and diffs the tool surface against
 the previous release's. Posts once per new release; prints an empty report when nothing is new."""
 
+import contextlib
 import hashlib
 import json
 import os
@@ -30,6 +31,20 @@ REPOS = {
 ORG = "mechubsec"  # GitHub org whose releases are canaried; the images are mechub/<repo> on Docker Hub
 DOCKER_TAG = "https://hub.docker.com/v2/repositories/mechub/{repo}/tags/{version}"
 USER_AGENT = "labbots/1"
+# A `*` token scope reaches read-only tools only (rustjunosmcp >= 0.10: 15 write tools are hidden from
+# tools/list; rustpanosmcp calls are refused). Write tools must be named, and `*` cannot be mixed with names,
+# so the canary mints a second token naming them and unions the two tool lists. Unknown names make
+# `token add` fail, which shows as a red canary when a release renames one.
+# shortcut: this list is copied from each repo's docs, so a brand-new write tool is not seen until it is
+# added here; upgrade if a server ever exposes its full registry to an admin scope.
+WRITE_TOOLS = {
+    "rustjunosmcp": ["add_device", "approve_junos_change_set", "create_junos_change_set", "execute", "manage_appid_signature_package",
+                     "reload_devices", "rollback_config", "upgrade_junos", "apply_junos_change_set", "confirm_junos_change_set",
+                     "discard_candidate", "load_and_commit_config", "manage_idp_security_package", "render_and_apply_j2_template", "transfer_file"],
+    "rustpanosmcp": ["apply_panos_change_set", "approve_panos_change_set", "commit_panos_candidate", "create_panos_change_set", "diff_panos_candidate",
+                     "discard_panos_candidate", "get_candidate_fingerprint", "get_panos_change_set", "get_panos_operation", "stage_panos_config",
+                     "validate_panos_candidate"],
+}
 STATE_FILE = Path.home() / ".local/state/labbots/canarybot.json"
 BOOT_TIMEOUT_SECONDS = 60
 PULL_TIMEOUT_SECONDS = 600
@@ -124,6 +139,11 @@ def mcp_tools(url: str, token: str) -> tuple[dict, list[dict]]:
             return info, tools
 
 
+def merge_tools(*tool_lists: list[dict]) -> list[dict]:
+    """Union of several tools/list results by tool name (the first copy of a name wins)."""
+    return list({tool["name"]: tool for tools in reversed(tool_lists) for tool in tools}.values())
+
+
 def free_port() -> int:
     """An unused TCP port on loopback."""
     with socket.socket() as sock:
@@ -138,48 +158,66 @@ def docker(*args: str, timeout: int = 60, **kwargs) -> subprocess.CompletedProce
 
 def canary(repo: str, tag: str) -> tuple[str, float, dict[str, str], list[str]]:
     """Boot mechub/<repo>:<tag> throwaway and return (problem, boot seconds, tool digests, log tail).
-    The container and temp dir are always removed."""
+    Any error becomes a problem string, never an exception; the container and temp dir are always removed."""
     binary, port, inventory, extra_flags = REPOS[repo]
     image, name, host_port = f"mechub/{repo}:{tag}", f"canarybot-{repo}-{os.getpid()}", free_port()
     user = f"{os.getuid()}:{os.getgid()}"
     workdir = Path(tempfile.mkdtemp(prefix="canarybot-"))
-    log_path, container, token = workdir / "container.log", None, ""
+    log_path, container, tokens = workdir / "container.log", None, []
+    started = time.monotonic()
+
+    def mint(token_name: str, scope: str) -> str:
+        """Mint a throwaway token into the temp dir's tokens file; return its secret."""
+        minted = docker("run", "--rm", "--network", "none", "--cap-drop", "ALL", "--user", user, "-e", "CANARY_KEY=unused", "-v", f"{workdir}:/cfg", "--entrypoint",
+                        f"/usr/local/bin/{binary}", image, "token", "add", "-f", "/cfg/devices.json", "--tokens-file", "/cfg/tokens.json", "--name", token_name,
+                        "--devices", "*", "--tools", scope)
+        secrets = re.findall(r"[A-Za-z0-9_\-.]{24,}", minted.stdout)  # the secret is the only long word it prints
+        if minted.returncode or not secrets:
+            raise RuntimeError(f"could not mint token {token_name}: {minted.stderr.strip()[-200:]}")
+        return max(secrets, key=len)
+
+    def scrubbed_log() -> list[str]:
+        text = log_path.read_text(errors="replace") if log_path.exists() else ""
+        for token in tokens:
+            text = text.replace(token, "<token>")
+        return text.splitlines()
+
     try:
         devices = workdir / "devices.json"
         devices.write_text(json.dumps(inventory))
         devices.chmod(0o600)  # the servers refuse a looser inventory
         for subdir in ("leases", "staging"):
             (workdir / subdir).mkdir(mode=0o700)
-        minted = docker("run", "--rm", "--network", "none", "--cap-drop", "ALL", "--user", user, "-e", "CANARY_KEY=unused", "-v", f"{workdir}:/cfg", "--entrypoint", f"/usr/local/bin/{binary}",
-                        image, "token", "add", "-f", "/cfg/devices.json", "--tokens-file", "/cfg/tokens.json", "--name", "canary", "--devices", "*", "--tools", "*")
-        secrets = re.findall(r"[A-Za-z0-9_\-.]{24,}", minted.stdout)  # the secret is the only long word it prints
-        if minted.returncode or not secrets:
-            return f"could not mint a token: {minted.stderr.strip()[-200:]}", 0.0, {}, []
-        token = max(secrets, key=len)
+        tokens.append(mint("canary", "*"))
+        tokens.append(mint("canary-write", ",".join(WRITE_TOOLS[repo])))
         started = time.monotonic()
         with log_path.open("w") as log:
             container = subprocess.Popen(
                 ["docker", "run", "--rm", "--name", name, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp", "--user", user, "-e", "CANARY_KEY=unused",
                  "-v", f"{workdir}:/cfg", "-p", f"127.0.0.1:{host_port}:{port}", "--entrypoint", f"/usr/local/bin/{binary}", image,
                  "-f", "/cfg/devices.json", "--tokens-file", "/cfg/tokens.json", "-t", "streamable-http", "-H", "0.0.0.0", "-p", str(port),
-                 "--allow-insecure-bind", "--allowed-host", f"127.0.0.1:{host_port}", "--allowed-origin", f"http://127.0.0.1:{host_port}", *extra_flags], stdout=log, stderr=subprocess.STDOUT)
-        info, tools, problem = {}, [], "did not answer MCP initialize within the boot timeout"
+                 "--allow-insecure-bind", "--allowed-host", f"127.0.0.1:{host_port}", "--allowed-origin", f"http://127.0.0.1:{host_port}", *extra_flags],
+                stdout=log, stderr=subprocess.STDOUT)
+        info, tool_lists, problem = {}, [], "did not answer MCP initialize within the boot timeout"
         while time.monotonic() - started < BOOT_TIMEOUT_SECONDS:
             if container.poll() is not None:
                 problem = f"container exited with code {container.returncode} before answering"
                 break
             try:
-                info, tools = mcp_tools(f"http://127.0.0.1:{host_port}/mcp", token)
-                problem = ""
+                results = [mcp_tools(f"http://127.0.0.1:{host_port}/mcp", token) for token in tokens]
+                info, tool_lists, problem = results[0][0], [tools for _, tools in results], ""
                 break
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
                 time.sleep(0.5)
         boot_seconds = time.monotonic() - started
+        tools = merge_tools(*tool_lists)
         problem = problem or verdict(tag, info.get("version")) or ("tools/list is empty" if not tools else "")
-        log_tail = [line.replace(token, "<token>") for line in log_path.read_text(errors="replace").splitlines()]
-        return problem, boot_seconds, tool_digests(tools), log_tail
+        return problem, boot_seconds, tool_digests(tools), scrubbed_log()
+    except Exception as exc:  # a hung `token add`, malformed JSON/SSE, ...: one bad image must not sink the report
+        return f"canary error: {type(exc).__name__}: {str(exc)[:200]}", time.monotonic() - started, {}, scrubbed_log()
     finally:
-        docker("rm", "-f", name)
+        with contextlib.suppress(Exception):
+            docker("rm", "-f", name)
         if container:
             container.kill()
             container.wait()
@@ -203,7 +241,11 @@ def main() -> None:
         except Exception as exc:
             errors.append(f"❓ {repo}: lookup failed ({type(exc).__name__})")
             continue
-        pulled = docker("pull", "-q", f"mechub/{repo}:{tag}", timeout=PULL_TIMEOUT_SECONDS)
+        try:
+            pulled = docker("pull", "-q", f"mechub/{repo}:{tag}", timeout=PULL_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            errors.append(f"❓ {repo} {tag}: docker pull timed out")
+            continue
         if pulled.returncode:
             errors.append(f"❓ {repo} {tag}: docker pull failed: {pulled.stderr.strip()[-150:]}")
             continue

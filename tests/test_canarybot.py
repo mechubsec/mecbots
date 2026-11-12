@@ -41,3 +41,21 @@ def test_format_result_failure_keeps_last_ten_log_lines():
     assert text.startswith("🔴") and "line20" in text and "line19" not in text
     baseline = canarybot.format_result("rustjunosmcp", "2.7.5", "", 0.8, {"a": "x"}, None, [])
     assert "baseline" in baseline
+
+
+def test_merge_tools_unions_read_and_write_lists():
+    merged = canarybot.merge_tools([tool("read_a"), tool("shared")], [tool("shared"), tool("write_b")])
+    assert sorted(t["name"] for t in merged) == ["read_a", "shared", "write_b"]
+
+
+def test_every_repo_names_its_write_tools():
+    assert set(canarybot.WRITE_TOOLS) == set(canarybot.REPOS)  # a `*` token never sees them
+    assert "load_and_commit_config" in canarybot.WRITE_TOOLS["rustjunosmcp"]
+
+
+def test_canary_turns_a_hung_docker_call_into_a_red_result(monkeypatch):
+    def hang(*args, **kwargs):
+        raise canarybot.subprocess.TimeoutExpired("docker", 60)
+    monkeypatch.setattr(canarybot, "docker", hang)
+    problem, _, tools, _ = canarybot.canary("rustjunosmcp", "2.7.5")
+    assert problem.startswith("canary error: TimeoutExpired") and tools == {}
