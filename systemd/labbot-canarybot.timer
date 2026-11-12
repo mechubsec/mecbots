@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: canary each new MCP server release image
+
+[Timer]
+OnCalendar=*:40
+Persistent=true
+Unit=labbot@canarybot.service
+
+[Install]
+WantedBy=timers.target
