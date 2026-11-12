@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: hello report
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=labbot@hellobot.service
+
+[Install]
+WantedBy=timers.target
