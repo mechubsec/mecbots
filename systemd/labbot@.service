@@ -1,0 +1,10 @@
+[Unit]
+Description=labbots: %i report
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I %h/mecbots/bin/run_bot.py %i
+# hermes lives in ~/.local/bin, which a user unit's default PATH lacks
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
