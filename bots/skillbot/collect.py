@@ -514,14 +514,17 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
             "items": items, "changed": changed, "baseline": baseline}
 
 
+def acknowledged(state: dict) -> float:
+    """The delivery time a collect may rely on. A marker newer than a failed collect is that failure notice's, not an
+    acknowledgement of the run before it: then the value that failed collect recorded is kept (also across repeated failures)."""
+    delivered, previous = delivered_at(), state.get("run", {})
+    return state.get("delivered", 0.0) if "fatal" in previous and delivered > previous["at"] else delivered
+
+
 def run() -> dict:
     """Gather, fetch, compare and screen; returns the run record (errors are recorded, not raised)."""
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    delivered = delivered_at()
-    failed = state.get("run", {})
-    # a marker newer than a failed collect is that failure notice's, not an acknowledgement of the run before it:
-    # keep what the failed collect itself saw, so a run delivered before the failure stays acknowledged
-    state["delivered"] = state.get("delivered", 0.0) if "fatal" in failed and delivered > failed["at"] else delivered
+    state["delivered"] = acknowledged(state)
     inventory_by_host, errors = {}, {}
     for host in HOSTS:
         data, error = gather_host(host)
@@ -560,8 +563,8 @@ def main() -> int:
         record = run()
     except Exception as exc:
         state = json.loads(STATE.read_text()) if STATE.exists() else {}
+        state["delivered"] = acknowledged(state)  # as it stood before this failure's own notice
         state["run"] = {"at": time.time(), "fatal": f"{type(exc).__name__}: {str(exc)[:200]}"}
-        state["delivered"] = delivered_at()  # as it stood before this failure's own notice: run() keeps it over that notice's marker
         save_state(state)
         raise
     print(f"skillbot collect: {time.time() - started:.0f}s, outdated={len(record['findings']['outdated'])} "

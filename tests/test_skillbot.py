@@ -574,3 +574,9 @@ def test_a_failure_notice_marker_does_not_acknowledge_the_run_before_the_failed_
     collect.STATE.write_text(json.dumps({"current": {"at": now - 30 * 3600, "items": []}, "run": {"at": now - 6 * 3600, "fatal": "boom"}, "delivered": now - 29 * 3600}))
     collect.run()
     assert json.loads(collect.STATE.read_text())["delivered"] == now - 29 * 3600
+    # a second failed collect in a row keeps that value too, not the first failure notice's marker
+    collect.STATE.write_text(json.dumps({"run": {"at": now - 6 * 3600, "fatal": "boom"}, "delivered": 0.0}))
+    monkeypatch.setattr(collect, "run", lambda: 1 / 0)
+    with pytest.raises(ZeroDivisionError):
+        collect.main()
+    assert json.loads(collect.STATE.read_text())["delivered"] == 0.0
