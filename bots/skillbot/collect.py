@@ -46,7 +46,8 @@ MAX_FILE_CHARS = 200_000  # per file read for scanning
 COLLECTOR_OK = "ok\tcollector\t1"  # last line of collect.sh
 # a collect is "reported" once the runner wrote skillbot.delivered (after a successful post, or an intentionally
 # empty report, of a real run) at or after its time, and within DELIVERY_WINDOW of it
-DELIVERED = Path(os.environ.get("SKILLBOT_DELIVERED", STATE.with_name("skillbot.delivered")))
+# the runner writes it under LABBOTS_STATE_DIR (see run_bot.STATE_DIR), whatever SKILLBOT_STATE says
+DELIVERED = Path(os.environ.get("SKILLBOT_DELIVERED", Path(os.environ.get("LABBOTS_STATE_DIR", Path.home() / ".local/state/labbots")) / "skillbot.delivered"))
 DELIVERY_WINDOW = 20 * 3600  # a marker later than this belongs to a report that called the run stale, not one that described it
 LOCAL_BASELINE_HOURS = 12  # a manual re-run within this window still diffs against the previous night
 

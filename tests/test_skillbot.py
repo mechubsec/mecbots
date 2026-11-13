@@ -550,3 +550,10 @@ def test_versions_survive_the_runners_scrub():
     assert "v1.99.2.0" in text and "v1.1.3/v1.98.0.1" in text and "v1.91.60.0" in text
     assert run_bot.scrub(text, []) == text  # no version became [ip] (the report holds no real addresses)
     assert report.ver(None) == "None" and report.ver("unversioned") == "unversioned" and report.ver("v2.0") == "v2.0"
+
+
+def test_delivered_marker_follows_labbots_state_dir_not_skillbot_state(tmp_path, monkeypatch):
+    monkeypatch.delenv("SKILLBOT_DELIVERED", raising=False)
+    monkeypatch.setenv("SKILLBOT_STATE", str(tmp_path / "elsewhere" / "skillbot.json"))
+    monkeypatch.setenv("LABBOTS_STATE_DIR", str(tmp_path / "state"))
+    assert load("skillbot_collect_env", REPO / "bots" / "skillbot" / "collect.py").DELIVERED == tmp_path / "state" / "skillbot.delivered"

@@ -21,5 +21,3 @@
 
 - **skillbot's delivered marker is a time, not a run.** If a collect fails after an earlier run's post also
   failed, the marker written for the failure notice can be taken as acknowledging the earlier run.
-- **Changing `SKILLBOT_STATE` or `LABBOTS_STATE_DIR` alone splits the marker's path.** Set both, or neither, or
-  skillbot never sees a delivery and reports the same items as new every night.
