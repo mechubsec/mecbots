@@ -238,7 +238,7 @@ def main() -> int:
             # stored apart from `known`: a quiet first night leaves `known` empty but is still the baseline
             run, known = collect(lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0],
                                  now, state.get("known", {}), not state.get("baselined", False), state.get("last"))
-            write_escalations(ESCALATIONS, run["escalated"], now)
+            write_escalations(ESCALATIONS, run["escalated"], time.time())  # stamped after the queries: socagent ends its evidence window here
             # the new state is saved only after the queue was written: a failed write retries tomorrow's comparison, the escalation is not lost
             state = {"known": known, "baselined": True, "last": snapshot(run)}
             STATE.write_text(json.dumps(state, indent=1))
