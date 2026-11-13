@@ -38,13 +38,14 @@ At most three items, most urgent first, ids numbered in that order. The kinds:
 | Kind | Fires when |
 |---|---|
 | `new-high-alert` | a new alert group at `critical` or `high` severity |
-| `deny-spike` | denied flows are at least 100 and at least 3x the previous run's total, and both totals are exact (see below) |
+| `deny-spike` | denied flows are at least 100 and at least 3x the previous run's total, and the previous total was exact (see below) |
 | `firewall-quiet` | a firewall was logging at the previous run and has been quiet for more than 6 hours, but not for more than 48 |
 
-`query_flows` replies stop at 1,000 rows, so a total at the cap cannot show a spike (1,000 to 10,000 looks flat).
-When any deny reply is truncated in this run or in the previous one, the spike check is skipped and the report
-says `deny total capped: spike check skipped`; the trigger fires only when both totals are exact. A previous
-snapshot that does not record this counts as capped.
+`query_flows` replies stop at 1,000 rows per action. A capped total for tonight is a floor, so if the previous
+total was exact and the floor already meets the trigger, the spike is escalated as "at least N" (the brief says
+"Denied flows: at least N" too). When the previous run's total was capped the ratio cannot be established: the
+spike check is skipped and the report says `deny total capped: spike check skipped`. A previous snapshot that does
+not record this counts as capped.
 
 The baseline run and a run with no previous snapshot escalate nothing. An empty list is a valid queue. The
 file is written atomically with mode 600. A failed run leaves the old queue alone, and the state (known

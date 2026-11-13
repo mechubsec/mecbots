@@ -11,7 +11,8 @@
   writes `<bot>.delivered` in the state directory; a dry run or a failed post does not.
 - socbot: exact alert counts from one `alert_counts` call instead of capped per-vendor pages. An escalation
   queue (at most three items) for an agent; a tighter advice prompt. Review fixes: the deny-spike trigger is
-  skipped, and the brief says so, when a deny total is capped at the row limit in this or the previous run; state
+  skipped, and the brief says so, only when the previous run's total was capped; a capped current total is a floor
+  and still escalates as "at least N" when it meets the trigger; state
   is saved only after the escalation queue was written; a missing or forbidden `alert_counts` is reported as such
   (needs an SSDF version that has it, and a token that lists it).
 - skillbot: seven fixes. Ahead-of-upstream skills are reported; sources without a release tag are read from

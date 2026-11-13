@@ -100,9 +100,10 @@ def plain(text, limit: int = 200) -> str:
 
 
 def deny_capped(run: dict, previous: dict | None) -> bool:
-    """True when this run's or the previous run's deny total came from a truncated query_flows reply (capped at
-    DENY_LIMIT rows per action): the totals cannot show a spike then. A previous snapshot that does not say counts as capped."""
-    return bool(run["denied_truncated"] or (previous or {}).get("denied_truncated", True))
+    """True when the PREVIOUS run's deny total was capped (query_flows stops at DENY_LIMIT rows per action), so the
+    ratio cannot be established and the spike check is skipped; a snapshot that does not say counts as capped.
+    A capped CURRENT total is only a floor: if the floor already meets the trigger it still escalates."""
+    return bool((previous or {}).get("denied_truncated", True))
 
 
 def escalations(run: dict, previous: dict | None) -> list[dict]:
@@ -119,8 +120,11 @@ def escalations(run: dict, previous: dict | None) -> list[dict]:
                           {"signature": plain(group["signature"]), "severity": group["severity"], "observer": plain(group["observer"], 80), "count": group["count"]}))
     total, before = run["denied_total"], previous.get("denied_total", 0)
     if not deny_capped(run, previous) and total >= DENY_SPIKE_MIN and total >= DENY_SPIKE_FACTOR * before:
-        found.append((ESCALATION_PRIORITY["deny-spike"], 0, "deny-spike", f"{total} denied flows in 24h, previous run {before}",
-                      {"denied_total": total, "previous_total": before, "top_sources": run["denied_src"], "top_destinations": run["denied_dst"]}))
+        floor = bool(run["denied_truncated"])  # the current count is capped: a floor, not an exact total
+        found.append((ESCALATION_PRIORITY["deny-spike"], 0, "deny-spike",
+                      f"{'at least ' if floor else ''}{total} denied flows in 24h{' (reply capped)' if floor else ''}, previous run {before}",
+                      {"denied_total": total, "previous_total": before, "top_sources": run["denied_src"], "top_destinations": run["denied_dst"],
+                       **({"at_least": True} if floor else {})}))
     for item in run["ingest"].get("firewalls", []):
         hours = item.get("hours_since")
         if (item.get("stale") and isinstance(hours, (int, float)) and QUIET_ESCALATE_HOURS < hours <= LONG_QUIET_HOURS
@@ -171,7 +175,7 @@ def build_report(run: dict) -> str:
     if run["alerts_truncated"]:
         lines.append("⚠️ alert_counts hit its 500-group limit: the smallest groups are not listed")
     if run["denied_total"]:
-        lines.append(f"Denied flows: {run['denied_total']}"
+        lines.append(f"Denied flows: {'at least ' if run['denied_truncated'] else ''}{run['denied_total']}"
                      + (f" (rankings use only the newest {DENY_LIMIT} per action: a sample)" if run["denied_truncated"] else "")
                      + (f", {run['denied_unranked']} without an IPv4 address (IPv6) not ranked" if run["denied_unranked"] else ""))
     for label, side in (("sources", "denied_src"), ("destinations", "denied_dst")):

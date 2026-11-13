@@ -111,7 +111,7 @@ def test_truncated_alert_counts_warn_and_exact_counts_do_not_say_floor():
 
 def test_denies_without_ipv4_and_sampled_rankings_are_stated():
     text = socbot.build_report(quiet_run(denied_total=3000, denied_truncated=True, denied_unranked=2))
-    assert "Denied flows: 3000 (rankings use only the newest" in text and "2 without an IPv4 address" in text and "✅" not in text
+    assert "Denied flows: at least 3000 (rankings use only the newest" in text and "2 without an IPv4 address" in text and "✅" not in text
 
 
 def test_collect_queries_every_deny_action_and_counts_unranked_ipv6():
@@ -222,25 +222,30 @@ def test_failed_query_leaves_the_queue_alone(tmp_path, monkeypatch):
 
 # --- review fixes ---
 
-def test_deny_spike_is_skipped_when_either_total_is_capped_and_the_brief_says_so():
-    spike = lambda **changes: kinds(socbot.escalations(esc_run(denied_total=3000, **changes), {**PREVIOUS, "denied_total": 1000}))
-    assert spike() == ["deny-spike"]  # both exact: kept
-    assert spike(denied_truncated=True) == []  # 1,000 -> 10,000 capped at the limit looks flat: skipped
-    assert kinds(socbot.escalations(esc_run(denied_total=3000), {"denied_total": 1000, "logging": []})) == []  # an old snapshot may be capped
-    assert kinds(socbot.escalations(esc_run(denied_total=3000), {**PREVIOUS, "denied_total": 1000, "denied_truncated": True})) == []
+def test_a_capped_current_total_is_a_floor_and_only_a_capped_previous_total_skips_the_check():
+    spike = lambda previous, **changes: socbot.escalations(esc_run(**changes), {**PREVIOUS, **previous})
+    (item,) = spike({"denied_total": 1000}, denied_total=3000, denied_truncated=True)  # exact previous, capped now: 3000 is at least 3x
+    assert item["kind"] == "deny-spike" and item["summary"].startswith("at least 3000 denied flows") and item["facts"]["at_least"] is True
+    assert spike({"denied_total": 1000}, denied_total=2999, denied_truncated=True) == []  # the floor does not meet 3x
+    assert spike({"denied_total": 1000}, denied_total=999, denied_truncated=True) == []
+    (exact,) = spike({"denied_total": 1000}, denied_total=3000)
+    assert "at_least" not in exact["facts"] and exact["summary"].startswith("3000 denied flows")
+    assert spike({"denied_total": 1000, "denied_truncated": True}, denied_total=3000) == []  # previous capped: no ratio
+    assert spike({"denied_total": 1000, "denied_truncated": True}, denied_total=3000, denied_truncated=True) == []
+    assert kinds(socbot.escalations(esc_run(denied_total=3000), {"denied_total": 1000, "logging": []})) == []  # an old snapshot counts as capped
     assert "deny total capped: spike check skipped" in socbot.build_report(quiet_run(deny_capped=True))
     assert "capped" not in socbot.build_report(quiet_run())
 
 
-def test_collect_flags_a_capped_total_only_when_there_was_something_to_compare():
+def test_collect_flags_the_skip_only_when_the_previous_total_was_capped():
     empty = {"rows": [], "row_count": 0, "truncated": False}
     capped = {"rows": [], "row_count": 1000, "truncated": True}
     replies = {"alert_counts": empty, "query_flows": capped, "ingest_status": {"firewalls": []}, "fabric_status": {"subjects": []}}
     call = lambda tool, arguments: replies[tool]
-    assert socbot.collect(call, NOW, {}, False, PREVIOUS)[0]["deny_capped"]
+    run = socbot.collect(call, NOW, {}, False, PREVIOUS)[0]
+    assert run["deny_capped"] is False and run["denied_truncated"]  # capped now, exact before: not skipped
+    assert "spike check skipped" not in socbot.build_report(run) and "Denied flows: at least 3000" in socbot.build_report({**run, "denied_total": 3000})
     assert not socbot.collect(call, NOW, {}, True, None)[0]["deny_capped"]  # baseline night
-    replies["query_flows"] = empty
-    assert socbot.collect(call, NOW, {}, False, PREVIOUS)[0]["deny_capped"] is False
     assert socbot.collect(call, NOW, {}, False, {**PREVIOUS, "denied_truncated": True})[0]["deny_capped"]
 
 
