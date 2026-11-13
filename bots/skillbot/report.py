@@ -3,7 +3,6 @@ reading of the change), drift, gstack per host, newly discovered other skills an
 Posts only when something is new since the last collect or, on Monday, while anything is outdated;
 otherwise prints an empty report so run_bot.py posts nothing."""
 
-import fcntl
 import json
 import os
 import re
@@ -126,11 +125,14 @@ def build_report(state: dict, now: float) -> str:
     findings = run["findings"]
     outdated_gstack = [host for host, info in run["gstack"].items() if info["kind"] == "outdated"]
     tally = (f"{len(findings['outdated'])} outdated · {len(findings['drift'])} drifted · "
-             f"gstack outdated on {len(outdated_gstack)} · {len(run['new_other'])} new other skills · {len(run['errors'])} hosts unreachable")
+             f"gstack outdated on {len(outdated_gstack)} · {len(run['new_other'])} new other skills · {len(run['errors'])} hosts unreachable · "
+             f"{len(run.get('old_collectors', []))} on an old collector")
     lines = [f"**skillbot** ({datetime.fromtimestamp(run['at']):%d %b %H:%M})", f"Findings: {tally}"]
     for source, info in run["sources"].items():
         if info.get("error"):
             lines.append(f"⚠️ {source}: source fetch failed: {defang(info['error'], 100)}")
+    for host in run.get("old_collectors", []):  # before the long per-skill detail: the length cap cuts from the bottom
+        lines.append(f"⚠️ {defang(host, 20)}: old collector: update it (no end marker, so a failed run cannot be told from a complete one)")
     for source in ("fwskillsshare",):
         info = run["sources"].get(source) or {}
         if findings["outdated"] and info.get("version"):
@@ -143,8 +145,6 @@ def build_report(state: dict, now: float) -> str:
     for skill, entry in sorted(findings["ahead"].items()):
         lines.append(f"⬆️ ahead {defang(skill, 50)} installed {defang(ver(entry['targets'][0]['installed']), 20)} > release {defang(ver(entry['available']), 20)} on {len(entry['targets'])} host/harness")
     lines += others_lines(run)
-    for host in run.get("old_collectors", []):
-        lines.append(f"⚠️ {defang(host, 20)}: old collector: update it (no end marker, so a failed run cannot be told from a complete one)")
     for host, error in sorted(run["errors"].items()):
         lines.append(f"⚠️ {defang(host, 20)} unreachable: {defang(error, 80)}; its skills were not checked")
     if len(lines) == 2:
@@ -152,24 +152,9 @@ def build_report(state: dict, now: float) -> str:
     return fit(lines)
 
 
-def acknowledge(run_at: float) -> None:
-    """Record that the report read the collect run made at run_at; collect.py advances its night-to-night
-    baseline only past an acknowledged run. Same lock and atomic replace as collect.py's save_state."""
-    with open(STATE.with_suffix(".lock"), "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        state = json.loads(STATE.read_text())
-        state["acked"] = max(state.get("acked", 0), run_at)
-        temporary = STATE.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, indent=1))
-        temporary.replace(STATE)
-
-
 def main() -> int:
     """Print the report between the markers run_bot.py expects."""
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    run = state.get("run")
-    if run and "fatal" not in run and time.time() - run["at"] <= STALE_SECONDS:  # a stale or failed collect was not reported on
-        acknowledge(run["at"])
     print("REPORT START")
     print(build_report(state, time.time()))
     print("REPORT END")

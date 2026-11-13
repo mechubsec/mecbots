@@ -19,7 +19,8 @@
   the default branch; targets on different versions get the whole release scanned; an incomplete scan is
   flagged; the collector ends with a sentinel line; setup fails fast; a catch-up collect is not rolled past.
   Review fixes: a host on the old collector (no sentinel) is accepted and flagged; the sentinel is printed only
-  when every step succeeded; the baseline advances only past a collect the report acknowledged; a release or tag
+  when every step succeeded; the baseline advances only past a collect whose report the runner marked delivered (a dry run no longer counts);
+  old-collector warnings are listed first and counted in the tally; a release or tag
   API failure is a source error, not a reason to scan `HEAD`.
   Versions are printed with a leading `v` (also canarybot's tags), so the runner's scrub keeps four-part ones such
   as `v1.99.2.0` instead of turning them into `[ip]`.

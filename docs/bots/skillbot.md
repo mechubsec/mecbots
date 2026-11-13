@@ -45,9 +45,12 @@ Generate a key, list your hosts in `SKILLBOT_HOSTS` (names `ssh` can resolve), a
 - **A model's reading is labelled unverified.** A local model summarises the diff with no tools; the text is
   defanged and never changes a flag.
 - **Post only on change.** The report speaks when something is new since the last collect, or on Mondays while
-  anything is outdated. The night-to-night baseline advances only past a run the report acknowledged: `report.py`
-  records the time of the collect run it read, so a disabled or failed report cannot make the changes vanish.
-  (A `--dry-run` of the report also acknowledges, so use a scratch `SKILLBOT_STATE` for experiments.)
+  anything is outdated. The night-to-night baseline advances only past a run whose report was delivered: after a real
+  post, or an intentionally empty report, the runner writes `skillbot.delivered` (the time), and `collect.py`
+  moves the baseline only when that marker is at or after the run and within 20 hours of it. A disabled report, a
+  failed scrub or post, a crashed `report.py` and a `--dry-run` all leave it alone, so the changes are not lost.
+- **Old-collector warnings come first.** A host on the old collector is listed before the per-skill detail (the
+  length cap cuts from the bottom) and counted in the tally line.
 
 ## Known limits
 

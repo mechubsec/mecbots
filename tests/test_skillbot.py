@@ -151,13 +151,13 @@ def test_changed_items_use_the_previous_epoch():
     inventory_by_host["hosta"]["harnesses"] = {"claude": {"srx-ips": ["1.0.0", "other"]}}
     night1 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0)
     assert night1["changed"] == ["drift:srx-ips:hosta/claude"] and night1["baseline"]
-    state["acked"] = state["current"]["at"]  # the report read each night's run (report.acknowledge)
+    state["delivered"] = state["current"]["at"]  # the runner delivered each night's report
     night2 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 86400)
     assert night2["changed"] == []
     rerun = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 86400 + 600)
     assert rerun["changed"] == []
     inventory_by_host["hostb"] = inventory_by_host["hosta"]
-    state["acked"] = state["current"]["at"]
+    state["delivered"] = state["current"]["at"]
     night3 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 2 * 86400)
     rerun3 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 2 * 86400 + 600)
     assert night3["changed"] == rerun3["changed"] == ["drift:srx-ips:hostb/claude"]
@@ -410,7 +410,7 @@ def test_collector_prints_a_sentinel_even_with_no_skills(tmp_path, monkeypatch):
 
 
 def test_catch_up_collect_is_not_rolled_past_before_a_report_ran():
-    ack = lambda: state.update(acked=state["current"]["at"])  # what report.py's acknowledge() writes
+    ack = lambda: state.update(delivered=state["current"]["at"])  # what the runner's delivered marker says
     def at(day: int, hour: int, minute: int = 0) -> float:
         return time.mktime((2024, 1, day - 8, hour, minute, 0, 0, 0, -1))
     hosts = {"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}
@@ -463,28 +463,49 @@ def test_collector_prints_no_sentinel_and_exits_non_zero_when_a_step_fails(tmp_p
     assert result.returncode != 0 and collect.COLLECTOR_OK not in result.stdout
 
 
-def test_report_acknowledges_the_run_it_read_and_collect_waits_for_it(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(report, "STATE", tmp_path / "skillbot.json")
+def test_baseline_advances_only_past_a_run_whose_report_was_delivered(tmp_path, monkeypatch):
     now = time.time()
-    state = {"run": {"at": now - 3600, "changed": [], "findings": {"outdated": {}, "drift": {}, "ahead": {}}, "gstack": {}, "sources": {}}}
-    report.STATE.write_text(json.dumps(state))
-    report.main()
-    assert json.loads(report.STATE.read_text())["acked"] == now - 3600 and json.loads(report.STATE.read_text())["run"]["at"] == now - 3600
-    stale = {"run": {"at": now - 30 * 3600}}  # a stale collect was not reported on: no acknowledgement
-    report.STATE.write_text(json.dumps(stale))
-    report.main()
-    assert "acked" not in json.loads(report.STATE.read_text())
-    # no acknowledgement: the baseline stays put however much time passed
+    monkeypatch.setattr(collect, "DELIVERED", tmp_path / "skillbot.delivered")
+    assert collect.delivered_at() == 0.0  # no marker
+    collect.DELIVERED.write_text("garbage")
+    assert collect.delivered_at() == 0.0
+    collect.DELIVERED.write_text(f"{now}\n")
+    assert collect.delivered_at() == now
     hosts = {"hosta": {"harnesses": {"claude": {"srx-ips": ["1.0.0", "other"]}}, "gstack": None, "plugins": {}}}
     sources = {"fwskillsshare": {"tag": "v1"}, "gstack": {"version": "1", "tag": "v1", "basis": "x"}}
+    skills = {"srx-ips": SOURCE["srx-ips"]}
+    empty = {"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}
     state = {}
-    collect.analyze({"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 5 * 86400)
-    assert state["compare"] is None
-    collect.analyze(hosts, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 4 * 86400)
-    assert state["compare"] is None  # never acknowledged
-    state["acked"] = state["current"]["at"]
-    collect.analyze(hosts, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 3 * 86400)
-    assert state["compare"]["at"] == now - 4 * 86400
+    collect.analyze(empty, {}, sources, skills, {}, state, now - 5 * 86400)
+    collect.analyze(hosts, {}, sources, skills, {}, state, now - 4 * 86400)
+    assert state["compare"] is None  # nothing was ever delivered: the baseline stays put
+    first_run = state["current"]["at"]
+    for delivered in (first_run - 1, first_run + collect.DELIVERY_WINDOW + 1):  # before the run, or a stale-run notice long after it
+        state["delivered"] = delivered
+        collect.analyze(hosts, {}, sources, skills, {}, state, now - 3 * 86400)
+        assert state["compare"] is None
+        state["current"] = {"at": first_run, "items": state["current"]["items"]}
+    state["delivered"] = first_run + 6 * 3600  # the 07:35 report delivered
+    collect.analyze(hosts, {}, sources, skills, {}, state, now - 2 * 86400)
+    assert state["compare"]["at"] == first_run
+
+
+def test_the_report_no_longer_writes_state(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(report, "STATE", tmp_path / "skillbot.json")
+    now = time.time()
+    report.STATE.write_text(json.dumps({"run": {"at": now - 3600, "changed": ["x"], "findings": {"outdated": {}, "drift": {}, "ahead": {}}, "gstack": {}, "sources": {}, "errors": {}, "new_other": []}}))
+    before = report.STATE.read_text()
+    report.main()
+    assert report.STATE.read_text() == before and not hasattr(report, "acknowledge")  # a dry run of the report counts for nothing
+
+
+def test_old_collector_warnings_come_first_survive_the_length_cap_and_are_counted():
+    entries = {f"skill-{index}": {"source": "s", "available": "2.0", "tag": "v2", "targets": [{"host": "hosta", "harness": "hermes", "installed": "1.0"}] * 6} for index in range(40)}
+    run = run_record(findings={"outdated": entries, "drift": {}, "ahead": {}}, old_collectors=["hostb"], changed=["x"])
+    text = report.build_report({"run": run}, run["at"] + 60)
+    assert "old collector: update it" in text and "1 on an old collector" in text and len(text) <= report.MESSAGE_LIMIT
+    assert text.index("old collector: update it") < text.index("🔺")
+    assert "0 on an old collector" in report.build_report({"run": run_record(changed=["x"])}, run["at"] + 60)
 
 
 def test_release_lookup_falls_back_to_head_only_when_the_api_says_nothing_exists(monkeypatch):

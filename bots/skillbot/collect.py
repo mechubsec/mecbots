@@ -44,7 +44,10 @@ MAX_MEMBERS = 5000
 MAX_FILES = 500  # per skill directory; the archive itself is capped at MAX_MEMBERS
 MAX_FILE_CHARS = 200_000  # per file read for scanning
 COLLECTOR_OK = "ok\tcollector\t1"  # last line of collect.sh
-# a collect is "reported" once report.py has written state["acked"] >= its time (see report.acknowledge)
+# a collect is "reported" once the runner wrote skillbot.delivered (after a successful post, or an intentionally
+# empty report, of a real run) at or after its time, and within DELIVERY_WINDOW of it
+DELIVERED = Path(os.environ.get("SKILLBOT_DELIVERED", STATE.with_name("skillbot.delivered")))
+DELIVERY_WINDOW = 20 * 3600  # a marker later than this belongs to a report that called the run stale, not one that described it
 LOCAL_BASELINE_HOURS = 12  # a manual re-run within this window still diffs against the previous night
 
 
@@ -467,6 +470,14 @@ def run_items(findings: dict, gstack: dict, new_other: list[str], unreachable: l
     return items + [f"new:{key}" for key in new_other] + [f"unreachable:{host}" for host in unreachable] + [f"old-collector:{host}" for host in old_collectors]
 
 
+def delivered_at() -> float:
+    """The time in the report's delivered marker (see run_bot.mark_delivered); 0 when missing or unreadable."""
+    try:
+        return float(DELIVERED.read_text())
+    except (OSError, ValueError):
+        return 0.0
+
+
 def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills: dict, source_files: dict,
             state: dict, now: float) -> dict:
     """The whole night's result from already-fetched inputs (state is updated in place)."""
@@ -487,10 +498,11 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
     old_collectors = sorted(host for host, data in inventory_by_host.items() if data.get("old_collector"))
     items = run_items(findings, gstack, new_other, unreachable, sources, old_collectors)
     # `changed` = items not in the last epoch's set; a re-run within hours keeps the older reference
-    # the epoch also needs the report to have acknowledged it: a disabled or failed report, or a catch-up collect
-    # it never read, must not let the next collect roll past what nobody was told
+    # the epoch also needs the report to have been delivered after it (state["delivered"], from the marker): a
+    # disabled, failed or undelivered report, or a catch-up collect it never read, must not let the next collect
+    # roll past what nobody was told
     current = state.get("current")
-    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 and state.get("acked", 0) >= current["at"] else state.get("compare")
+    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 and 0 <= state.get("delivered", 0) - current["at"] <= DELIVERY_WINDOW else state.get("compare")
     state["compare"], state["current"] = compare, {"at": now, "items": items}
     changed = sorted(set(items) - set(compare["items"])) if compare else items
     return {"at": now, "errors": errors, "sources": sources, "findings": findings, "screens": screens, "gstack": gstack,
@@ -504,6 +516,7 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
 def run() -> dict:
     """Gather, fetch, compare and screen; returns the run record (errors are recorded, not raised)."""
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
+    state["delivered"] = delivered_at()
     inventory_by_host, errors = {}, {}
     for host in HOSTS:
         data, error = gather_host(host)
