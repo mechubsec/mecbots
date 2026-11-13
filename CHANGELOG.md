@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.2
+
+Still alpha quality.
 
 - socbot: the escalation queue is stamped after its queries ran, so socagent's evidence window covers the alert that caused the escalation.
 - run_bot: a report that prints empty markers and then exits non-zero is no longer recorded as delivered.
