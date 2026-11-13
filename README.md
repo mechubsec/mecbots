@@ -26,6 +26,9 @@ Small, deterministic bots that report to Discord. A bot is a script that prints 
 optional prompt for a local model, and a systemd timer. The model only adds a few lines of advice and has
 no tools. A how-to with a runner and five example bots, not a product: copy what you need.
 
+**Discord is not sovereign.** It is a cloud service, used here only as the exit point for scrubbed reports;
+the full report never leaves your machine. A self-hosted push option ([ntfy](https://ntfy.sh)) is planned.
+
 ## Install
 
 Needs Linux with systemd, Python 3.11+, PyYAML, [Ollama](https://ollama.com), [Hermes Agent](https://github.com/NousResearch/hermes-agent) and a Discord server you administer.
