@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.1
+
+Still alpha quality.
+
+- README: Discord is not sovereign; a self-hosted ntfy option is planned.
+- Tests: the skillbot fake matches the API host exactly (a code scanning finding).
+
 ## 0.0.1-alpha
 
 First public release, alpha. The runner (`bin/run_bot.py`), the MCP client and host helpers, and the example bots

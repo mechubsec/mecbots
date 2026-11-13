@@ -16,4 +16,4 @@ New bots, new optional variables and tighter checks are minor; fixes and docs ar
 
 ## Agents
 
-mecagents 0.0.1-alpha needs mecbots 0.0.1-alpha or later.
+mecagents 0.0.1 needs mecbots 0.0.1-alpha or later.
