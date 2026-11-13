@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.2.0
+## 0.0.1-alpha
+
+First public release, alpha. The runner (`bin/run_bot.py`), the MCP client and host helpers, and the example bots
+hellobot, socbot, skillbot, reposbot and canarybot, with tests and systemd units.
+
+Also in this release:
 
 - Runner: two-tier reporting. The full report is saved locally with an index page; Discord gets a scrubbed
   copy (addresses, MACs, names from a private redact list). `--dry-run --full`. There is no always-on report
@@ -27,8 +32,3 @@
 - canarybot: the tool surface comes from the image's own registry over stdio; no hand-copied write-tool table. A paginated
   stdio tool list (any `nextCursor`, even an empty one) fails the canary instead of recording a truncated baseline.
 - Docs split: a short README, with setup, rules, caveats, ideas, versioning and per-bot details in their own files.
-
-## 0.1.0
-
-First public state: the runner (`bin/run_bot.py`), the MCP client and host helpers, and the example bots
-hellobot, socbot, skillbot, reposbot and canarybot, with tests and systemd units.
