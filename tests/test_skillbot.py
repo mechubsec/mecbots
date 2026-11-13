@@ -509,10 +509,10 @@ def test_old_collector_warnings_come_first_survive_the_length_cap_and_are_counte
 
 
 def test_release_lookup_falls_back_to_head_only_when_the_api_says_nothing_exists(monkeypatch):
-    import urllib.error
+    import urllib.error, urllib.parse
     answers = {}
     def fake_get(url, limit):
-        answer = answers[url.rsplit("/repos/", 1)[-1] if "api.github.com" in url else "raw"]
+        answer = answers[url.rsplit("/repos/", 1)[-1] if urllib.parse.urlsplit(url).hostname == "api.github.com" else "raw"]
         if isinstance(answer, Exception):
             raise answer
         return answer
