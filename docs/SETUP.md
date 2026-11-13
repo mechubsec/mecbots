@@ -91,7 +91,8 @@ default. Set them in a drop-in or the unit's `Environment=`.
 
 MCP servers are looked up by name in `~/.hermes/config.yaml` (`mcp_servers:`, with `url` and `headers`);
 `${VAR}` in a header is filled from `~/.hermes/.env`. Mint a token that is read-only and scoped to the tools the
-bot needs, one per bot. Per-bot needs are in [docs/bots/](bots/).
+bot needs, one per bot. Per-bot needs are in [docs/bots/](bots/). socbot needs an SSDF version that has the
+`alert_counts` tool, and its token must list that tool ([socbot](bots/socbot.md)).
 
 ## Two-tier reporting
 

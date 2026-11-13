@@ -99,6 +99,12 @@ def plain(text, limit: int = 200) -> str:
     return re.sub(r"[\x00-\x1f\x7f]", " ", str(text))[:limit]
 
 
+def deny_capped(run: dict, previous: dict | None) -> bool:
+    """True when this run's or the previous run's deny total came from a truncated query_flows reply (capped at
+    DENY_LIMIT rows per action): the totals cannot show a spike then. A previous snapshot that does not say counts as capped."""
+    return bool(run["denied_truncated"] or (previous or {}).get("denied_truncated", True))
+
+
 def escalations(run: dict, previous: dict | None) -> list[dict]:
     """The items socbot hands to socagent, [{id, kind, summary, facts}], at most MAX_ESCALATIONS, most urgent first.
     Deterministic: only socbot's own structured findings. `previous` is the last run's snapshot (see snapshot); the
@@ -112,7 +118,7 @@ def escalations(run: dict, previous: dict | None) -> list[dict]:
                           f"new {group['severity']} alert x{group['count']} on {safe(group['observer'], 40)}: {safe(group['signature'])}",
                           {"signature": plain(group["signature"]), "severity": group["severity"], "observer": plain(group["observer"], 80), "count": group["count"]}))
     total, before = run["denied_total"], previous.get("denied_total", 0)
-    if total >= DENY_SPIKE_MIN and total >= DENY_SPIKE_FACTOR * before:
+    if not deny_capped(run, previous) and total >= DENY_SPIKE_MIN and total >= DENY_SPIKE_FACTOR * before:
         found.append((ESCALATION_PRIORITY["deny-spike"], 0, "deny-spike", f"{total} denied flows in 24h, previous run {before}",
                       {"denied_total": total, "previous_total": before, "top_sources": run["denied_src"], "top_destinations": run["denied_dst"]}))
     for item in run["ingest"].get("firewalls", []):
@@ -127,8 +133,8 @@ def escalations(run: dict, previous: dict | None) -> list[dict]:
 
 
 def snapshot(run: dict) -> dict:
-    """What the next run compares against: tonight's denied total and the firewalls that were logging."""
-    return {"denied_total": run["denied_total"],
+    """What the next run compares against: tonight's denied total (and whether it was capped) and the firewalls that were logging."""
+    return {"denied_total": run["denied_total"], "denied_truncated": run["denied_truncated"],
             "logging": sorted(item["name"] for item in run["ingest"].get("firewalls", []) if not item.get("stale"))}
 
 
@@ -176,6 +182,8 @@ def build_report(run: dict) -> str:
         lines.append(f"🔇 +{len(recent_quiet) - SHOWN} more quiet")
     if long_quiet:
         lines.append(f"Quiet over {LONG_QUIET_HOURS // 24} days (info, flagged before): {', '.join(long_quiet)}")
+    if run.get("deny_capped"):
+        lines.append("ℹ️ deny total capped: spike check skipped")
     escalated = run.get("escalated", [])
     if escalated:
         lines.append(f"➡️ escalated to socagent: {len(escalated)} item(s): {', '.join(item['kind'] for item in escalated)}")
@@ -186,7 +194,13 @@ def build_report(run: dict) -> str:
 
 def collect(call, now: float, known: dict, baseline: bool, previous: dict | None = None) -> tuple[dict, dict]:
     """Query SSDF and return (run, known'). call(tool, arguments) returns one raw tool reply; `previous` is the last run's snapshot."""
-    alert_reply = checked("alert_counts", call("alert_counts", {"since": "now-24h", "min_severity": "medium", "providers": ""}))
+    try:
+        alert_reply = checked("alert_counts", call("alert_counts", {"since": "now-24h", "min_severity": "medium", "providers": ""}))
+    except RuntimeError as exc:
+        if re.search(r"unknown|not found|no such|forbidden|not (?:permitted|allowed|authori[sz]ed)|unauthori[sz]ed|scope", str(exc), re.I):
+            raise RuntimeError("alert_counts is missing or not allowed: socbot needs an SSDF version that has alert_counts, "
+                               f"and its token must list it ({str(exc)[:100]})") from exc
+        raise
     denied_replies = [checked("query_flows", call("query_flows", {"action": action, "since": "now-24h", "limit": DENY_LIMIT}))
                       for action in DENY_ACTIONS]
     denied_rows = [row for reply in denied_replies for row in reply["rows"]]
@@ -203,6 +217,8 @@ def collect(call, now: float, known: dict, baseline: bool, previous: dict | None
            # IPv6 flows have no source_ip/destination_ip (Nullable(IPv4)), so they cannot be ranked
            "denied_unranked": sum(1 for row in denied_rows if not row.get("source_ip")),
            "ingest": ingest, "fabric": fabric}
+    # a first night has nothing to compare, so there is no spike check to skip
+    run["deny_capped"] = not baseline and previous is not None and deny_capped(run, previous)
     run["escalated"] = escalations(run, previous)
     return run, known
 
@@ -216,14 +232,14 @@ def main() -> int:
         now = time.time()
         try:
             # stored apart from `known`: a quiet first night leaves `known` empty but is still the baseline
-            run, state["known"] = collect(lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0],
-                                          now, state.get("known", {}), not state.get("baselined", False), state.get("last"))
-            state["baselined"] = True
-            state["last"] = snapshot(run)
+            run, known = collect(lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0],
+                                 now, state.get("known", {}), not state.get("baselined", False), state.get("last"))
             write_escalations(ESCALATIONS, run["escalated"], now)
+            # the new state is saved only after the queue was written: a failed write retries tomorrow's comparison, the escalation is not lost
+            state = {"known": known, "baselined": True, "last": snapshot(run)}
+            STATE.write_text(json.dumps(state, indent=1))
         except Exception as exc:
             run = {"at": now, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-        STATE.write_text(json.dumps({"known": state.get("known", {}), "baselined": state.get("baselined", False), "last": state.get("last")}, indent=1))
     print("REPORT START")
     print(build_report(run))
     print("REPORT END")

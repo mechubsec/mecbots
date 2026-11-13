@@ -127,7 +127,7 @@ def test_collect_queries_every_deny_action_and_counts_unranked_ipv6():
 
 # --- escalation to socagent ------------------------------------------------------------------------------
 
-PREVIOUS = {"denied_total": 10, "logging": ["fw-a", "fw-b", "fw-c"]}
+PREVIOUS = {"denied_total": 10, "denied_truncated": False, "logging": ["fw-a", "fw-b", "fw-c"]}
 
 
 def esc_run(**changes) -> dict:
@@ -165,7 +165,7 @@ def test_firewall_quiet_only_when_it_was_logging_and_over_six_hours_but_not_long
                  {"name": "fw-ok", "provider": "juniper", "hours_since": 0.1, "stale": False}]
     (item,) = socbot.escalations(esc_run(ingest={"firewalls": firewalls}), PREVIOUS)
     assert item["kind"] == "firewall-quiet" and item["facts"] == {"firewall": "fw-a", "provider": "juniper", "hours_since": 7.4, "last_event": "2026-01-01T10:00:00"}
-    assert socbot.snapshot(esc_run(denied_total=4, ingest={"firewalls": firewalls})) == {"denied_total": 4, "logging": ["fw-ok"]}
+    assert socbot.snapshot(esc_run(denied_total=4, ingest={"firewalls": firewalls})) == {"denied_total": 4, "denied_truncated": False, "logging": ["fw-ok"]}
 
 
 def test_queue_is_capped_at_three_and_ordered_alerts_then_spike_then_quiet():
@@ -218,3 +218,62 @@ def test_failed_query_leaves_the_queue_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(socbot, "mcp_call_tools", lambda server, calls: (_ for _ in ()).throw(RuntimeError("down")))
     socbot.main()
     assert not (tmp_path / "queue.json").exists()
+
+
+# --- review fixes ---
+
+def test_deny_spike_is_skipped_when_either_total_is_capped_and_the_brief_says_so():
+    spike = lambda **changes: kinds(socbot.escalations(esc_run(denied_total=3000, **changes), {**PREVIOUS, "denied_total": 1000}))
+    assert spike() == ["deny-spike"]  # both exact: kept
+    assert spike(denied_truncated=True) == []  # 1,000 -> 10,000 capped at the limit looks flat: skipped
+    assert kinds(socbot.escalations(esc_run(denied_total=3000), {"denied_total": 1000, "logging": []})) == []  # an old snapshot may be capped
+    assert kinds(socbot.escalations(esc_run(denied_total=3000), {**PREVIOUS, "denied_total": 1000, "denied_truncated": True})) == []
+    assert "deny total capped: spike check skipped" in socbot.build_report(quiet_run(deny_capped=True))
+    assert "capped" not in socbot.build_report(quiet_run())
+
+
+def test_collect_flags_a_capped_total_only_when_there_was_something_to_compare():
+    empty = {"rows": [], "row_count": 0, "truncated": False}
+    capped = {"rows": [], "row_count": 1000, "truncated": True}
+    replies = {"alert_counts": empty, "query_flows": capped, "ingest_status": {"firewalls": []}, "fabric_status": {"subjects": []}}
+    call = lambda tool, arguments: replies[tool]
+    assert socbot.collect(call, NOW, {}, False, PREVIOUS)[0]["deny_capped"]
+    assert not socbot.collect(call, NOW, {}, True, None)[0]["deny_capped"]  # baseline night
+    replies["query_flows"] = empty
+    assert socbot.collect(call, NOW, {}, False, PREVIOUS)[0]["deny_capped"] is False
+    assert socbot.collect(call, NOW, {}, False, {**PREVIOUS, "denied_truncated": True})[0]["deny_capped"]
+
+
+def test_state_is_saved_only_after_the_queue_was_written(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(socbot, "STATE", tmp_path / "socbot.json")
+    monkeypatch.setattr(socbot, "ESCALATIONS", tmp_path / "queue.json")
+    start = {"known": {"old": NOW}, "baselined": True, "last": {"denied_total": 1, "denied_truncated": False, "logging": []}}
+    (tmp_path / "socbot.json").write_text(json.dumps(start))
+    replies = {"alert_counts": {"rows": [alert("brand-new", "critical")], "row_count": 1, "truncated": False},
+               "query_flows": {"rows": [], "row_count": 5, "truncated": False}, "ingest_status": {"firewalls": []}, "fabric_status": {"subjects": []}}
+    monkeypatch.setattr(socbot, "mcp_call_tools", lambda server, calls: [replies[calls[0][0]]])
+    monkeypatch.setattr(socbot, "write_escalations", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+    socbot.main()
+    assert json.loads((tmp_path / "socbot.json").read_text()) == start  # untouched: tomorrow's run still sees "brand-new" as new
+    assert "SSDF query failed" in capsys.readouterr().out
+    monkeypatch.undo()
+    monkeypatch.setattr(socbot, "STATE", tmp_path / "socbot.json")
+    monkeypatch.setattr(socbot, "ESCALATIONS", tmp_path / "queue.json")
+    monkeypatch.setattr(socbot, "mcp_call_tools", lambda server, calls: [replies[calls[0][0]]])
+    socbot.main()
+    assert "brand-new" in json.loads((tmp_path / "socbot.json").read_text())["known"]
+
+
+def test_a_missing_or_forbidden_alert_counts_tool_says_what_is_needed():
+    for message in ("alert_counts: unknown tool", "alert_counts: tool not permitted for this token"):
+        def refuse(tool, arguments, message=message):
+            raise RuntimeError(message)
+        try:
+            socbot.collect(refuse, NOW, {}, False)
+            raise AssertionError("must raise")
+        except RuntimeError as exc:
+            assert "needs an SSDF version that has alert_counts" in str(exc) and "token must list it" in str(exc)
+    try:
+        socbot.collect(lambda tool, arguments: (_ for _ in ()).throw(RuntimeError("alert_counts: timed out")), NOW, {}, False)
+    except RuntimeError as exc:
+        assert "timed out" in str(exc) and "needs an SSDF" not in str(exc)

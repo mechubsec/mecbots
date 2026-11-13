@@ -9,7 +9,10 @@
   "version" exemption stays on one line; reports are named to the second with a suffix on collision; the index is
   rewritten atomically under a lock.
 - socbot: exact alert counts from one `alert_counts` call instead of capped per-vendor pages. An escalation
-  queue (at most three items) for an agent; a tighter advice prompt.
+  queue (at most three items) for an agent; a tighter advice prompt. Review fixes: the deny-spike trigger is
+  skipped, and the brief says so, when a deny total is capped at the row limit in this or the previous run; state
+  is saved only after the escalation queue was written; a missing or forbidden `alert_counts` is reported as such
+  (needs an SSDF version that has it, and a token that lists it).
 - skillbot: seven fixes. Ahead-of-upstream skills are reported; sources without a release tag are read from
   the default branch; targets on different versions get the whole release scanned; an incomplete scan is
   flagged; the collector ends with a sentinel line; setup fails fast; a catch-up collect is not rolled past.
