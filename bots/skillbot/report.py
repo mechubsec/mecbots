@@ -27,6 +27,13 @@ def defang(text: str, limit: int = 160) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def ver(version) -> str:
+    """A version printed with a leading v ('1.99.2.0' -> 'v1.99.2.0'), which the runner's scrub() recognises as a
+    version, not an address. Anything not starting with a digit ('unversioned', 'v2') is left alone."""
+    text = str(version)
+    return "v" + text if text[:1].isdigit() else text
+
+
 def should_post(run: dict, now: float) -> bool:
     """Post a stale or failed collect, anything new since the last collect, or on Monday anything outdated."""
     if not run or "fatal" in run or now - run["at"] > STALE_SECONDS:
@@ -40,7 +47,7 @@ def should_post(run: dict, now: float) -> bool:
 
 def pairs(targets: list[dict]) -> str:
     """'hosta/hermes 1.1.3, hostb/claude 1.1.3'."""
-    return ", ".join(f"{defang(target['host'], 20)}/{defang(target['harness'], 10)} {defang(str(target['installed'] or 'unversioned'), 20)}" for target in targets)
+    return ", ".join(f"{defang(target['host'], 20)}/{defang(target['harness'], 10)} {defang(ver(target['installed'] or 'unversioned'), 20)}" for target in targets)
 
 
 def model_lines(model: dict | None) -> list[str]:
@@ -56,8 +63,8 @@ def model_lines(model: dict | None) -> list[str]:
 def outdated_block(skill: str, entry: dict, screen: dict | None) -> list[str]:
     """One 🔺 block: versions, who needs it, review flags, the model's reading."""
     tag = f" ({defang(entry['tag'], 30)})" if entry["tag"] else ""
-    available = defang(str(entry["available"]), 20)
-    installed = sorted({str(target["installed"]) for target in entry["targets"]})
+    available = defang(ver(entry["available"]), 20)
+    installed = sorted({ver(target["installed"]) for target in entry["targets"]})
     lines = [f"🔺 {defang(skill, 50)} {defang('/'.join(installed), 30)} → {available}{tag}", f"  update: {pairs(entry['targets'])}"]
     if not screen:
         return lines
@@ -82,8 +89,8 @@ def gstack_lines(run: dict) -> list[str]:
     if not upstream.get("version"):
         return [f"gstack: upstream unknown ({defang(upstream.get('error', 'no data'), 80)})"]
     marks = {"outdated": "🔺", "current": "✅", "ahead": "⬆️", "unknown": "❔"}
-    per_host = ", ".join(f"{marks[info['kind']]} {defang(host, 20)} {defang(str(info['installed']), 20)}" for host, info in sorted(run["gstack"].items()))
-    return [f"**gstack** upstream {defang(upstream['version'], 20)} ({defang(upstream['basis'], 60)}): {per_host}"]
+    per_host = ", ".join(f"{marks[info['kind']]} {defang(host, 20)} {defang(ver(info['installed']), 20)}" for host, info in sorted(run["gstack"].items()))
+    return [f"**gstack** upstream {defang(ver(upstream['version']), 20)} ({defang(upstream['basis'], 60)}): {per_host}"]
 
 
 def others_lines(run: dict) -> list[str]:
@@ -127,14 +134,14 @@ def build_report(state: dict, now: float) -> str:
     for source in ("fwskillsshare",):
         info = run["sources"].get(source) or {}
         if findings["outdated"] and info.get("version"):
-            lines.append(f"**{source}** latest {defang(info['tag'] or info['version'], 20)} ({defang(info['basis'], 40)})")
+            lines.append(f"**{source}** latest {defang(ver(info['tag'] or info['version']), 20)} ({defang(info['basis'], 40)})")
     for skill, entry in sorted(findings["outdated"].items()):
         lines += outdated_block(skill, entry, run["screens"].get(skill))
     lines += gstack_lines(run)
     for skill, entry in sorted(findings["drift"].items()):
-        lines.append(f"〰️ drift {defang(skill, 50)} same version {defang(str(entry['available']), 20)}, SKILL.md differs: {pairs(entry['targets'])}")
+        lines.append(f"〰️ drift {defang(skill, 50)} same version {defang(ver(entry['available']), 20)}, SKILL.md differs: {pairs(entry['targets'])}")
     for skill, entry in sorted(findings["ahead"].items()):
-        lines.append(f"⬆️ ahead {defang(skill, 50)} installed {defang(str(entry['targets'][0]['installed']), 20)} > release {defang(str(entry['available']), 20)} on {len(entry['targets'])} host/harness")
+        lines.append(f"⬆️ ahead {defang(skill, 50)} installed {defang(ver(entry['targets'][0]['installed']), 20)} > release {defang(ver(entry['available']), 20)} on {len(entry['targets'])} host/harness")
     lines += others_lines(run)
     for host in run.get("old_collectors", []):
         lines.append(f"⚠️ {defang(host, 20)}: old collector: update it (no end marker, so a failed run cannot be told from a complete one)")

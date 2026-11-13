@@ -203,7 +203,7 @@ def test_report_defangs_snippets_and_model_text():
     text = report.build_report({"run": run}, time.time())
     assert "@everyone" not in text and "@​everyone" in text
     assert "](" not in text
-    assert "🔺 srx-nat 1.1.3 → 1.2.0 (v1.12.1)" in text and "🚩 fetch-and-run in SKILL.md" in text and "unverified" in text
+    assert "🔺 srx-nat v1.1.3 → v1.2.0 (v1.12.1)" in text and "🚩 fetch-and-run in SKILL.md" in text and "unverified" in text
     assert len(text) <= 2000
 
 
@@ -513,3 +513,19 @@ def test_release_lookup_falls_back_to_head_only_when_the_api_says_nothing_exists
         collect.latest_release("r")  # tags unavailable: not "no tags"
     monkeypatch.setattr(collect, "latest_release", lambda repo: (_ for _ in ()).throw(urllib.error.HTTPError("u", 403, "rate limit", {}, None)))
     assert "HTTPError" in collect.fetch_source("s", {"repo": "r", "skills_dir": "skills"}, Path("."))[3]
+
+
+def test_versions_survive_the_runners_scrub():
+    run_bot = load("run_bot_for_skillbot", REPO / "bin" / "run_bot.py")
+    run = run_record(
+        findings={"outdated": {"srx-nat": {"source": "s", "available": "1.99.2.0", "tag": "v1.99.2.0", "targets": [
+                      {"host": "hosta", "harness": "hermes", "installed": "1.98.0.1"}, {"host": "hostb", "harness": "claude", "installed": "1.1.3"}]}},
+                  "drift": {"srx-ips": {"available": "1.0.0.1", "targets": [{"host": "hosta", "harness": "claude", "installed": "1.0.0.1"}]}},
+                  "ahead": {"srx-dnat": {"available": "1.0.5.0", "targets": [{"host": "hosta", "harness": "claude", "installed": "1.1.0.0"}]}}},
+        gstack={"hosta": {"kind": "outdated", "installed": "1.91.60.0"}, "hostb": {"kind": "current", "installed": "1.99.2.0"}},
+        sources={"fwskillsshare": {"tag": "v1.12.1.0", "version": "1.12.1.0", "basis": "latest release"},
+                 "gstack": {"version": "1.99.2.0", "tag": "v1.99.2.0", "basis": "latest release"}})
+    text = report.build_report({"run": {**run, "changed": ["x"]}}, run["at"] + 60)
+    assert "v1.99.2.0" in text and "v1.1.3/v1.98.0.1" in text and "v1.91.60.0" in text
+    assert run_bot.scrub(text, []) == text  # no version became [ip] (the report holds no real addresses)
+    assert report.ver(None) == "None" and report.ver("unversioned") == "unversioned" and report.ver("v2.0") == "v2.0"

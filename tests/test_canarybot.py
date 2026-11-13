@@ -79,3 +79,13 @@ def test_a_paginated_stdio_tool_list_fails_the_canary_instead_of_recording_a_tru
     monkeypatch.setattr(canarybot, "docker", lambda *args, **kwargs: canarybot.subprocess.CompletedProcess(args, 0, "a" * 30 if "token" in args else page, ""))  # mint, then stdio
     problem, _, tools, _ = canarybot.canary("rustjunosmcp", "2.7.5")
     assert "tool list is paginated: not supported" in problem and tools == {}
+
+
+def test_versions_in_report_lines_survive_the_runners_scrub():
+    spec = importlib.util.spec_from_file_location("run_bot_for_canary", REPO / "bin" / "run_bot.py")
+    run_bot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_bot)
+    lines = [canarybot.format_result("rustjunosmcp", "2.7.5.1", "", 1.0, {"a": "x"}, {"a": "x"}, []),
+             canarybot.format_result("rustjunosmcp", "2.7.5.1", canarybot.verdict("2.7.5.1", "2.7.5.0"), 1.0, {}, None, ["log"])]
+    assert all("v2.7.5.1" in line for line in lines) and "v2.7.5.0" in lines[1]
+    assert [run_bot.scrub(line, []) for line in lines] == lines

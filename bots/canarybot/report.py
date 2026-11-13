@@ -80,14 +80,14 @@ def verdict(tag: str, server_version: str | None) -> str:
     """"" when the server reports the tag as its version, else the reason it is a failure."""
     if server_version is None:
         return "no serverInfo.version in the initialize reply"
-    return "" if server_version.lstrip("v") == tag else f"serverInfo.version is {server_version}, tag is {tag}"
+    return "" if server_version.lstrip("v") == tag else f"serverInfo.version is v{server_version.lstrip('v')}, tag is v{tag}"  # v: the runner's scrub keeps it
 
 
 def format_result(repo: str, tag: str, problem: str, boot_seconds: float, tools: dict[str, str], previous: dict[str, str] | None, log_tail: list[str]) -> str:
     """One repo's report block. previous is None on a baseline (first canary of the repo)."""
     if problem:
-        return f"🔴 **{repo} {tag}**: {problem}\n```\n" + "\n".join(log_tail[-LOG_LINES:]) + "\n```"
-    head = f"✅ **{repo} {tag}** · booted in {boot_seconds:.1f}s · {len(tools)} tools"
+        return f"🔴 **{repo} v{tag}**: {problem}\n```\n" + "\n".join(log_tail[-LOG_LINES:]) + "\n```"
+    head = f"✅ **{repo} v{tag}** · booted in {boot_seconds:.1f}s · {len(tools)} tools"
     if previous is None:
         return head + " · baseline recorded, nothing to compare"
     added, removed, changed = diff_tools(previous, tools)
@@ -255,10 +255,10 @@ def main() -> None:
         try:
             pulled = docker("pull", "-q", f"mechub/{repo}:{tag}", timeout=PULL_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            errors.append(f"❓ {repo} {tag}: docker pull timed out")
+            errors.append(f"❓ {repo} v{tag}: docker pull timed out")
             continue
         if pulled.returncode:
-            errors.append(f"❓ {repo} {tag}: docker pull failed: {pulled.stderr.strip()[-150:]}")
+            errors.append(f"❓ {repo} v{tag}: docker pull failed: {pulled.stderr.strip()[-150:]}")
             continue
         entry = state.get(repo, {})
         problem, boot_seconds, tools, log_tail = canary(repo, tag)
