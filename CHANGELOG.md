@@ -16,6 +16,9 @@
 - skillbot: seven fixes. Ahead-of-upstream skills are reported; sources without a release tag are read from
   the default branch; targets on different versions get the whole release scanned; an incomplete scan is
   flagged; the collector ends with a sentinel line; setup fails fast; a catch-up collect is not rolled past.
+  Review fixes: a host on the old collector (no sentinel) is accepted and flagged; the sentinel is printed only
+  when every step succeeded; the baseline advances only past a collect the report acknowledged; a release or tag
+  API failure is a source error, not a reason to scan `HEAD`.
 - canarybot: the tool surface comes from the image's own registry over stdio; no hand-copied write-tool table.
 - Docs split: a short README, with setup, rules, caveats, ideas, versioning and per-bot details in their own files.
 

@@ -3,6 +3,7 @@ Run: uvx --with pyyaml pytest -q tests/test_skillbot.py"""
 
 import importlib.util
 import io
+import json
 import sys
 import tarfile
 import time
@@ -150,11 +151,13 @@ def test_changed_items_use_the_previous_epoch():
     inventory_by_host["hosta"]["harnesses"] = {"claude": {"srx-ips": ["1.0.0", "other"]}}
     night1 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0)
     assert night1["changed"] == ["drift:srx-ips:hosta/claude"] and night1["baseline"]
+    state["acked"] = state["current"]["at"]  # the report read each night's run (report.acknowledge)
     night2 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 86400)
     assert night2["changed"] == []
     rerun = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 86400 + 600)
     assert rerun["changed"] == []
     inventory_by_host["hostb"] = inventory_by_host["hosta"]
+    state["acked"] = state["current"]["at"]
     night3 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 2 * 86400)
     rerun3 = collect.analyze(inventory_by_host, {}, sources, sources_skills, {}, state, 1_000_000.0 + 2 * 86400 + 600)
     assert night3["changed"] == rerun3["changed"] == ["drift:srx-ips:hostb/claude"]
@@ -402,11 +405,12 @@ def test_collector_prints_a_sentinel_even_with_no_skills(tmp_path, monkeypatch):
     monkeypatch.setattr(collect, "LOCAL_HOST", "localname")
     monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, result.stdout, ""))
     assert collect.gather_host("localname")[1] == ""  # empty but successful is not "unreachable"
-    monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "claude\tx\t1\tsha\n", ""))
-    assert collect.gather_host("localname")[0] is None  # output without the sentinel: the collector did not finish
+    monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    assert collect.gather_host("localname")[0] is None  # empty and no sentinel: a failure, not "no skills"
 
 
 def test_catch_up_collect_is_not_rolled_past_before_a_report_ran():
+    ack = lambda: state.update(acked=state["current"]["at"])  # what report.py's acknowledge() writes
     def at(day: int, hour: int, minute: int = 0) -> float:
         return time.mktime((2024, 1, day - 8, hour, minute, 0, 0, 0, -1))
     hosts = {"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}
@@ -415,11 +419,97 @@ def test_catch_up_collect_is_not_rolled_past_before_a_report_ran():
     source_skills = {"srx-ips": SOURCE["srx-ips"]}
     state: dict = {}
     collect.analyze(hosts, {}, sources, source_skills, {}, state, at(9, 1, 30))
+    ack()
     collect.analyze(hosts, {}, sources, source_skills, {}, state, at(10, 1, 30))
+    ack()
     # down over the 01:30 and 07:35 times: the collect catches up at 08:00 and finds a drift; the report ran first, on stale state
     caught_up = collect.analyze(drifted, {}, sources, source_skills, {}, state, at(10, 8))
     assert caught_up["changed"] == ["drift:srx-ips:hosta/claude"]
     # no report has run since 08:00, so the next 01:30 collect still compares with the pre-outage epoch and repeats it
     assert collect.analyze(drifted, {}, sources, source_skills, {}, state, at(11, 1, 30))["changed"] == ["drift:srx-ips:hosta/claude"]
-    # after the 07:35 report the epoch rolls, so the same drift is no longer news
+    # after the report acknowledged it the epoch rolls, so the same drift is no longer news
+    ack()
     assert collect.analyze(drifted, {}, sources, source_skills, {}, state, at(12, 1, 30))["changed"] == []
+
+
+# ---- review fixes: collector migration, sentinel, acknowledgement, release API ---------------------------
+
+def test_old_collector_without_the_sentinel_is_accepted_but_flagged(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(collect, "LOCAL_HOST", "localname")
+    run = lambda text, code=0: monkeypatch.setattr(collect.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, code, text, ""))
+    run("claude\tx\t1.0\tsha\n")  # a real inventory from the old collector
+    inventory, error = collect.gather_host("localname")
+    assert error == "" and inventory["old_collector"] and inventory["harnesses"] == {"claude": {"x": ["1.0", "sha"]}}
+    run("claude\tx\t1.0\tsha\n" + collect.COLLECTOR_OK + "\n")
+    assert "old_collector" not in collect.gather_host("localname")[0]
+    run("claude\tx\t1.0\tsha\n", code=1)
+    assert collect.gather_host("localname")[0] is None  # a non-zero exit is still a failure
+    run("")
+    assert collect.gather_host("localname")[0] is None  # only the sentinel makes an empty inventory a success
+    hosts = {"hosta": {"harnesses": {}, "gstack": None, "plugins": {}, "old_collector": True}}
+    sources = {"fwskillsshare": {"tag": "v1"}, "gstack": {"version": "1", "tag": "v1", "basis": "x"}}
+    record = collect.analyze(hosts, {}, sources, {}, {}, {}, time.time())
+    assert record["old_collectors"] == ["hosta"] and "old-collector:hosta" in record["items"]
+    assert "old collector: update it" in report.build_report({"run": record}, record["at"] + 60)
+
+
+def test_collector_prints_no_sentinel_and_exits_non_zero_when_a_step_fails(tmp_path):
+    import subprocess
+    plugins = tmp_path / ".claude/plugins"
+    plugins.mkdir(parents=True)
+    (plugins / "installed_plugins.json").write_text("{not json")
+    result = subprocess.run(["bash", str(REPO / "bots/skillbot/collect.sh")], env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}, capture_output=True, text=True)
+    assert result.returncode != 0 and collect.COLLECTOR_OK not in result.stdout
+
+
+def test_report_acknowledges_the_run_it_read_and_collect_waits_for_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(report, "STATE", tmp_path / "skillbot.json")
+    now = time.time()
+    state = {"run": {"at": now - 3600, "changed": [], "findings": {"outdated": {}, "drift": {}, "ahead": {}}, "gstack": {}, "sources": {}}}
+    report.STATE.write_text(json.dumps(state))
+    report.main()
+    assert json.loads(report.STATE.read_text())["acked"] == now - 3600 and json.loads(report.STATE.read_text())["run"]["at"] == now - 3600
+    stale = {"run": {"at": now - 30 * 3600}}  # a stale collect was not reported on: no acknowledgement
+    report.STATE.write_text(json.dumps(stale))
+    report.main()
+    assert "acked" not in json.loads(report.STATE.read_text())
+    # no acknowledgement: the baseline stays put however much time passed
+    hosts = {"hosta": {"harnesses": {"claude": {"srx-ips": ["1.0.0", "other"]}}, "gstack": None, "plugins": {}}}
+    sources = {"fwskillsshare": {"tag": "v1"}, "gstack": {"version": "1", "tag": "v1", "basis": "x"}}
+    state = {}
+    collect.analyze({"hosta": {"harnesses": {"claude": {}}, "gstack": None, "plugins": {}}}, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 5 * 86400)
+    assert state["compare"] is None
+    collect.analyze(hosts, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 4 * 86400)
+    assert state["compare"] is None  # never acknowledged
+    state["acked"] = state["current"]["at"]
+    collect.analyze(hosts, {}, sources, {"srx-ips": SOURCE["srx-ips"]}, {}, state, now - 3 * 86400)
+    assert state["compare"]["at"] == now - 4 * 86400
+
+
+def test_release_lookup_falls_back_to_head_only_when_the_api_says_nothing_exists(monkeypatch):
+    import urllib.error
+    answers = {}
+    def fake_get(url, limit):
+        answer = answers[url.rsplit("/repos/", 1)[-1] if "api.github.com" in url else "raw"]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(collect, "http_get", fake_get)
+    error = lambda code: urllib.error.HTTPError("u", code, "x", {}, None)
+    answers.update({"raw": b"9.9\n", "r/releases/latest": error(404), "r/tags?per_page=1": b"[]"})
+    assert collect.latest_release("r") == {"tag": None, "version": "9.9", "basis": "VERSION on the default branch (no releases or tags)"}
+    answers["r/tags?per_page=1"] = b'[{"name": "v2.0"}]'
+    assert collect.latest_release("r")["tag"] == "v2.0"
+    answers["r/releases/latest"] = b'{"tag_name": "v3.0"}'
+    assert collect.latest_release("r")["basis"] == "latest release"
+    for failure in (error(403), error(429), error(500), urllib.error.URLError("down")):  # rate limit or outage: a source error
+        answers["r/releases/latest"] = failure
+        with pytest.raises(Exception):
+            collect.latest_release("r")
+    answers["r/releases/latest"] = error(404)
+    answers["r/tags?per_page=1"] = error(403)
+    with pytest.raises(urllib.error.HTTPError):
+        collect.latest_release("r")  # tags unavailable: not "no tags"
+    monkeypatch.setattr(collect, "latest_release", lambda repo: (_ for _ in ()).throw(urllib.error.HTTPError("u", 403, "rate limit", {}, None)))
+    assert "HTTPError" in collect.fetch_source("s", {"repo": "r", "skills_dir": "skills"}, Path("."))[3]

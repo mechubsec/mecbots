@@ -23,11 +23,15 @@ Generate a key, list your hosts in `SKILLBOT_HOSTS` (names `ssh` can resolve), a
 - **A forced-command SSH key.** Each remote host runs `collect.sh` whatever the caller asks, via a
   `restrict,from=...,command=...` line in `authorized_keys`. The collector prints names, versions and hashes,
   never file contents, and takes no arguments. `setup.sh` fails fast and backs up `authorized_keys` first.
-- **A sentinel line.** `collect.sh` ends with `ok collector 1`, so a reachable host with no skills is not
-  "unreachable", and output without the sentinel counts as unfinished.
+- **A sentinel line, printed only on success.** `collect.sh` ends with `ok collector 1` only when every step
+  succeeded (a failed step exits non-zero with no sentinel), so a partial inventory is never accepted and a
+  reachable host with no skills is not "unreachable". The sentinel is required only to tell an empty inventory
+  from a failure: during migration a host still running the old collector, whose non-empty inventory has no
+  sentinel, is accepted and flagged "old collector: update it". Reinstall `collect.sh` on each host (`setup.sh`).
 - **Numeric version comparison.** `1.10.0` is newer than `1.9.9`. Each skill is `outdated`, `drift` (same or no
   version, different file hash), `ahead` (installed is newer; posted too) or current.
-- **Tagless sources work.** A repo with no release tag is read from its default branch.
+- **Tagless sources work.** A repo with no release and no tag is read from its default branch, but only when
+  GitHub positively says there are none; a rate limit or outage is a source error, never a tagless repo.
 - **Mixed versions.** If targets run different versions, the whole new release is scanned, not just what is
   new against one host's copy.
 - **An untrusted tarball is extracted safely.** Regular files and directories only, below the target, with caps
@@ -41,7 +45,9 @@ Generate a key, list your hosts in `SKILLBOT_HOSTS` (names `ssh` can resolve), a
 - **A model's reading is labelled unverified.** A local model summarises the diff with no tools; the text is
   defanged and never changes a flag.
 - **Post only on change.** The report speaks when something is new since the last collect, or on Mondays while
-  anything is outdated. A catch-up collect is not rolled past before a report has run.
+  anything is outdated. The night-to-night baseline advances only past a run the report acknowledged: `report.py`
+  records the time of the collect run it read, so a disabled or failed report cannot make the changes vanish.
+  (A `--dry-run` of the report also acknowledges, so use a scratch `SKILLBOT_STATE` for experiments.)
 
 ## Known limits
 

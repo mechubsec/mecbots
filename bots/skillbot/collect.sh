@@ -5,11 +5,12 @@
 #   claude|codex|hermes  name  version  sha256-of-SKILL.md      (version "-" when SKILL.md has none)
 #   gstack               -     VERSION  git HEAD short sha       (the suite counts once, not per skill)
 #   plugin               name  version  commit sha               (Claude plugins)
-#   ok                   collector  1                        (always last: the run completed)
+#   ok                   collector  1                        (last, and only when every step succeeded; otherwise exit 1)
 # Claude skills that are symlinks into the gstack checkout belong to the gstack line.
 set -uo pipefail
 export LC_ALL=C
 GSTACK="$HOME/.claude/skills/gstack"
+failed=0  # set by any step that fails: no sentinel, exit 1, so a partial inventory is never accepted
 
 # top-level `version:` of the first frontmatter block, quotes stripped
 version_of() {
@@ -20,8 +21,9 @@ version_of() {
 emit_skill() {  # harness skill_md_path name
   local harness="$1" file="$2" name="$3" version sha
   [ -f "$file" ] || return 0
-  version=$(version_of "$file")
-  sha=$(sha256sum "$file" | cut -d' ' -f1)
+  version=$(version_of "$file") || { failed=1; return 0; }
+  sha=$(sha256sum "$file") || { failed=1; return 0; }
+  sha=${sha%% *}
   printf '%s\t%s\t%s\t%s\n' "$harness" "$name" "${version:--}" "$sha"
 }
 
@@ -53,7 +55,7 @@ fi
 
 plugins="$HOME/.claude/plugins/installed_plugins.json"
 if [ -f "$plugins" ] && command -v python3 >/dev/null 2>&1; then
-  python3 -I - "$plugins" <<'PY'
+  python3 -I - "$plugins" <<'PY' || failed=1
 import json, sys
 for key, installs in json.load(open(sys.argv[1])).get("plugins", {}).items():
     for install in installs:
@@ -61,6 +63,7 @@ for key, installs in json.load(open(sys.argv[1])).get("plugins", {}).items():
 PY
 fi
 
+[ "$failed" -eq 0 ] || exit 1
 # last line: an empty inventory from a reachable host is "ok", not "unreachable" (parse_inventory skips it)
 printf 'ok\tcollector\t1\n'
 exit 0

@@ -16,8 +16,9 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
@@ -43,7 +44,7 @@ MAX_MEMBERS = 5000
 MAX_FILES = 500  # per skill directory; the archive itself is capped at MAX_MEMBERS
 MAX_FILE_CHARS = 200_000  # per file read for scanning
 COLLECTOR_OK = "ok\tcollector\t1"  # last line of collect.sh
-REPORT_TIME = (7, 35)  # the report timer: a collect is "reported" once this time has passed after it
+# a collect is "reported" once report.py has written state["acked"] >= its time (see report.acknowledge)
 LOCAL_BASELINE_HOURS = 12  # a manual re-run within this window still diffs against the previous night
 
 
@@ -159,10 +160,15 @@ def gather_host(host: str) -> tuple[dict | None, str]:
         result = subprocess.run(command, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return None, "timed out"
-    # collect.sh ends with the sentinel, so a reachable host with no skills (empty inventory) is not a failure
-    if result.returncode != 0 or COLLECTOR_OK not in result.stdout.splitlines():
+    if result.returncode != 0:
         return None, f"unreachable or collector failed (exit {result.returncode})"
-    return parse_inventory(result.stdout), ""
+    inventory = parse_inventory(result.stdout)
+    if COLLECTOR_OK in result.stdout.splitlines():  # the sentinel tells an empty inventory from a failure
+        return inventory, ""
+    # migration: a host still running the old collector sends a real inventory without the sentinel
+    if inventory["gstack"] or inventory["plugins"] or inventory["harnesses"]:
+        return {**inventory, "old_collector": True}, ""
+    return None, "collector gave no inventory and no end marker (unreachable, or an old collector with no skills)"
 
 
 # ---- sources -----------------------------------------------------------------------------------
@@ -179,15 +185,19 @@ def http_get(url: str, limit: int) -> bytes:
 
 def latest_release(repo: str) -> dict:
     """{tag, version, basis} from the repo's latest GitHub release; else its newest tag; else the VERSION
-    file on the default branch (tag None). 1-3 API calls (unauthenticated limit is 60/hour)."""
+    file on the default branch (tag None), only when the API positively says there are no releases (404) and no
+    tags (empty list). Any other failure (rate limit, outage) raises: a source error, not a tagless repo.
+    1-3 API calls (unauthenticated limit is 60/hour)."""
     base = f"https://api.github.com/repos/{repo}"
-    for path, basis, pick in (("/releases/latest", "latest release", lambda d: d["tag_name"]),
-                              ("/tags?per_page=1", "newest tag (no releases)", lambda d: d[0]["name"])):
-        try:
-            tag = pick(json.loads(http_get(base + path, 1_000_000)))
-        except Exception:  # 404 or an empty list: try the next, weaker source
-            continue
-        return {"tag": tag, "version": tag.lstrip("v"), "basis": basis}
+    try:
+        tag = json.loads(http_get(base + "/releases/latest", 1_000_000))["tag_name"]
+        return {"tag": tag, "version": tag.lstrip("v"), "basis": "latest release"}
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    tags = json.loads(http_get(base + "/tags?per_page=1", 1_000_000))
+    if tags:
+        return {"tag": tags[0]["name"], "version": tags[0]["name"].lstrip("v"), "basis": "newest tag (no releases)"}
     version = http_get(f"https://raw.githubusercontent.com/{repo}/HEAD/VERSION", 1000).decode().strip()
     return {"tag": None, "version": version, "basis": "VERSION on the default branch (no releases or tags)"}
 
@@ -445,7 +455,7 @@ def gstack_status(inventory: dict, upstream: dict | None) -> dict:
     return status
 
 
-def run_items(findings: dict, gstack: dict, new_other: list[str], unreachable: list[str], sources: dict) -> list[str]:
+def run_items(findings: dict, gstack: dict, new_other: list[str], unreachable: list[str], sources: dict, old_collectors: list[str] = ()) -> list[str]:
     """The things a post is about; a new member since the last night means 'changed'."""
     items = [f"outdated:{skill}:{entry['available']}:{target['host']}/{target['harness']}"
              for skill, entry in findings["outdated"].items() for target in entry["targets"]]
@@ -454,15 +464,7 @@ def run_items(findings: dict, gstack: dict, new_other: list[str], unreachable: l
     items += [f"gstack:{host}:{info['installed']}" for host, info in gstack.items() if info["kind"] == "outdated"]
     items += [f"gstack-ahead:{host}:{info['installed']}" for host, info in gstack.items() if info["kind"] == "ahead"]
     items += [f"source-error:{name}" for name, info in sorted(sources.items()) if info.get("error")]
-    return items + [f"new:{key}" for key in new_other] + [f"unreachable:{host}" for host in unreachable]
-
-
-def report_ran_since(then: float, now: float) -> bool:
-    """True when the report timer's last scheduled time before `now` is after `then`."""
-    last = datetime.fromtimestamp(now).replace(hour=REPORT_TIME[0], minute=REPORT_TIME[1], second=0, microsecond=0)
-    if last.timestamp() > now:
-        last -= timedelta(days=1)
-    return last.timestamp() > then
+    return items + [f"new:{key}" for key in new_other] + [f"unreachable:{host}" for host in unreachable] + [f"old-collector:{host}" for host in old_collectors]
 
 
 def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills: dict, source_files: dict,
@@ -482,16 +484,17 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
     if complete:
         state["others_seen"] = sorted(set(state.get("others_seen") or []) | set(keys))
     unreachable = sorted(errors)
-    items = run_items(findings, gstack, new_other, unreachable, sources)
+    old_collectors = sorted(host for host, data in inventory_by_host.items() if data.get("old_collector"))
+    items = run_items(findings, gstack, new_other, unreachable, sources, old_collectors)
     # `changed` = items not in the last epoch's set; a re-run within hours keeps the older reference
-    # the epoch also needs a report to have run since it: after downtime a catch-up collect at 08:00 may be
-    # read by a stale-state report (or none), and the 01:30 collect must not roll past what no report posted
+    # the epoch also needs the report to have acknowledged it: a disabled or failed report, or a catch-up collect
+    # it never read, must not let the next collect roll past what nobody was told
     current = state.get("current")
-    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 and report_ran_since(current["at"], now) else state.get("compare")
+    compare = current if current and now - current["at"] >= LOCAL_BASELINE_HOURS * 3600 and state.get("acked", 0) >= current["at"] else state.get("compare")
     state["compare"], state["current"] = compare, {"at": now, "items": items}
     changed = sorted(set(items) - set(compare["items"])) if compare else items
     return {"at": now, "errors": errors, "sources": sources, "findings": findings, "screens": screens, "gstack": gstack,
-            "new_other": new_other, "others": len(keys), "others_skipped": not complete,
+            "new_other": new_other, "others": len(keys), "others_skipped": not complete, "old_collectors": old_collectors,
             "counts": {host: {harness: len(skills) for harness, skills in data["harnesses"].items()} | {"plugin": len(data["plugins"])}
                        for host, data in inventory_by_host.items()},
             "plugins": {host: data["plugins"] for host, data in inventory_by_host.items()},
