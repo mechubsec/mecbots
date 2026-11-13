@@ -7,7 +7,8 @@
   page: read the files, or serve them only while your own SSH session is open. Review fixes: an unreadable redact
   list stops the post (only a missing one is tolerated); IPv4-mapped IPv6 and dotted MACs are scrubbed; the
   "version" exemption stays on one line; reports are named to the second with a suffix on collision; the index is
-  rewritten atomically under a lock.
+  rewritten atomically under a lock. After a real, delivered run (or an intentionally empty report) the runner
+  writes `<bot>.delivered` in the state directory; a dry run or a failed post does not.
 - socbot: exact alert counts from one `alert_counts` call instead of capped per-vendor pages. An escalation
   queue (at most three items) for an agent; a tighter advice prompt. Review fixes: the deny-spike trigger is
   skipped, and the brief says so, when a deny total is capped at the row limit in this or the previous run; state

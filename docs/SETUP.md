@@ -107,6 +107,11 @@ Every post has two copies.
   Version numbers that look like addresses are kept when the word "version", "upstream" or similar is just before
   them on the same line.
 
+After a real run delivers (the post succeeded, or the report was intentionally empty) the runner writes
+`~/.local/state/labbots/<bot>.delivered` (the time; mode 600, atomic; override the directory with
+`LABBOTS_STATE_DIR`). A dry run, a failed post or a failed `report.py` never writes it. Only skillbot reads it so
+far.
+
 A scrub failure stops the post, and so does a redact list that exists but cannot be read (permissions, a
 directory, an I/O error): only a list that does not exist is tolerated. A failed local copy does not stop it; the
 post says so.

@@ -74,6 +74,7 @@ def _fake_bot(tmp_path, monkeypatch, argv):
     monkeypatch.setattr(run_bot, "REPO", tmp_path)
     monkeypatch.setattr(run_bot, "REPORTS_DIR", tmp_path / "reports")
     monkeypatch.setattr(run_bot, "REDACT_FILE", tmp_path / "redact.txt")
+    monkeypatch.setattr(run_bot, "STATE_DIR", tmp_path / "state")  # a real run writes a delivered marker: never into the real state dir
     monkeypatch.setattr(sys, "argv", ["run_bot.py", "fake", *argv])
 
 
@@ -162,3 +163,41 @@ def test_save_report_waits_for_the_lock(tmp_path):
         assert not done.wait(0.3)  # blocked while another run holds the lock
     assert done.wait(5)
     worker.join()
+
+
+# --- delivered marker ---
+
+def _delivery_setup(tmp_path, monkeypatch, argv, script, exit_code=0):
+    _fake_bot(tmp_path, monkeypatch, argv)
+    (tmp_path / "bots" / "fake" / "report.py").write_text(script)
+    monkeypatch.setattr(run_bot, "STATE_DIR", tmp_path / "state")
+    real_run = run_bot.subprocess.run
+    posted = []
+    monkeypatch.setattr(run_bot.subprocess, "run", lambda cmd, **kw: (posted.append(cmd) or real_run(["sh", "-c", f"exit {exit_code}"])) if cmd[0] == "hermes" else real_run(cmd, **kw))
+    return posted, tmp_path / "state" / "fake.delivered"
+
+
+def test_delivered_marker_after_a_post_or_an_intentionally_empty_report_only(tmp_path, monkeypatch):
+    report = 'print("REPORT START\\nhello\\nREPORT END")'
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], report)
+    assert run_bot.main() == 0 and posted and float(marker.read_text()) > 0
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600 and [path.name for path in marker.parent.iterdir()] == ["fake.delivered"]
+    marker.unlink()
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], 'print("REPORT START\\nREPORT END")')  # nothing to report: an intentional empty
+    assert run_bot.main() == 0 and not posted and marker.exists()
+
+
+def test_no_delivered_marker_on_a_dry_run_a_failed_post_a_failed_scrub_or_a_failed_report(tmp_path, monkeypatch):
+    report = 'print("REPORT START\\nhello\\nREPORT END")'
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, ["--dry-run"], report)
+    assert run_bot.main() == 0 and not marker.exists()
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, ["--dry-run"], 'print("REPORT START\\nREPORT END")')
+    assert run_bot.main() == 0 and not marker.exists()  # an empty dry run did not deliver either
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], report, exit_code=1)
+    assert run_bot.main() == 1 and posted and not marker.exists()  # the post failed
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], report)
+    monkeypatch.setattr(run_bot, "scrub", lambda *args: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert run_bot.main() == 1 and not posted and not marker.exists()
+    monkeypatch.undo()
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], 'raise SystemExit(3)')  # report.py crashed: the failure notice posts, nothing was delivered
+    assert run_bot.main() == 0 and posted and not marker.exists()

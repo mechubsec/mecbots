@@ -26,6 +26,7 @@ TARGET = os.environ.get("LABBOTS_TARGET", "discord:#general")
 SCRIPT_TIMEOUT = int(os.environ.get("LABBOTS_TIMEOUT", "1800"))
 REPORTS_DIR = Path(os.environ.get("LABBOTS_REPORTS", Path.home() / "labbots-reports"))
 REDACT_FILE = Path(os.environ.get("LABBOTS_REDACT", Path.home() / ".config" / "labbots" / "redact.txt"))
+STATE_DIR = Path(os.environ.get("LABBOTS_STATE_DIR", Path.home() / ".local" / "state" / "labbots"))
 KEEP_REPORTS = 60
 INDEX_LINKS = 20
 
@@ -112,6 +113,27 @@ def _write_private(path: Path, text: str, exclusive: bool = False) -> None:
     os.chmod(path, 0o600)
 
 
+def mark_delivered(instance: str, now: float) -> None:
+    """Record, atomically with mode 600, that a real run of this bot finished delivering (the post succeeded, or the
+    report was intentionally empty): STATE_DIR/<instance>.delivered holds the time. Bots that must not move a
+    baseline past something nobody saw read it; a dry run or a failed post never writes it."""
+    if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", instance):
+        raise ValueError(f"bad bot name {instance!r}")
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    marker = STATE_DIR / f"{instance}.delivered"
+    temporary = marker.with_name(marker.name + ".tmp")
+    _write_private(temporary, f"{now}\n")
+    os.replace(temporary, marker)
+
+
+def _delivered(instance: str) -> None:
+    """mark_delivered, but a marker failure only warns: the post already happened."""
+    try:
+        mark_delivered(instance, time.time())
+    except Exception as exc:
+        print(f"could not write the delivered marker: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def report_path(instance: str, now: float) -> Path:
     """Where the full report of this run goes, relative to the reports directory."""
     if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", instance):
@@ -188,9 +210,13 @@ def main() -> int:
     result = subprocess.run(["/usr/bin/python3", "-I", str(script)], capture_output=True, text=True, timeout=SCRIPT_TIMEOUT)
     try:
         report = extract_report(result.stdout)
+        report_ran = True
     except ValueError:
+        report_ran = False  # the failure notice below is posted, but it is not a delivered report
         report = f"**{sys.argv[1]}: report failed** (exit {result.returncode})\n{result.stderr.strip()[-1500:]}"
     if not report:  # watcher bots print an empty report when nothing changed
+        if not dry_run:
+            _delivered(sys.argv[1])
         return 0
 
     message = report
@@ -228,7 +254,10 @@ def main() -> int:
         print(f"\n--- dry run: the full report would be saved to {REPORTS_DIR / relative if relative else '(no path)'}; nothing posted")
         return 0
     # each bot posts as the Hermes profile of the same name (its own Discord bot)
-    return subprocess.run(["hermes", "-p", bot, "send", "-q", "-t", TARGET], input=outgoing, text=True).returncode
+    status = subprocess.run(["hermes", "-p", bot, "send", "-q", "-t", TARGET], input=outgoing, text=True).returncode
+    if status == 0 and report_ran:
+        _delivered(sys.argv[1])
+    return status
 
 
 if __name__ == "__main__":
