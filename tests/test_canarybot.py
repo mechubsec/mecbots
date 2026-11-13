@@ -69,3 +69,13 @@ def test_canary_turns_a_hung_docker_call_into_a_red_result(monkeypatch):
     monkeypatch.setattr(canarybot, "docker", hang)
     problem, _, tools, _ = canarybot.canary("rustjunosmcp", "2.7.5")
     assert problem.startswith("canary error: TimeoutExpired") and tools == {}
+
+
+def test_a_paginated_stdio_tool_list_fails_the_canary_instead_of_recording_a_truncated_baseline(monkeypatch):
+    import pytest
+    page = '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}],"nextCursor":"page2"}}\n'
+    with pytest.raises(RuntimeError, match="tool list is paginated: not supported"):
+        canarybot.parse_stdio_tools(page)
+    monkeypatch.setattr(canarybot, "docker", lambda *args, **kwargs: canarybot.subprocess.CompletedProcess(args, 0, "a" * 30 if "token" in args else page, ""))  # mint, then stdio
+    problem, _, tools, _ = canarybot.canary("rustjunosmcp", "2.7.5")
+    assert "tool list is paginated: not supported" in problem and tools == {}

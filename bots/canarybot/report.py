@@ -129,12 +129,17 @@ def mcp_tools(url: str, token: str) -> tuple[dict, list[dict]]:
 
 
 def parse_stdio_tools(stdout: str) -> list[dict]:
-    """The tools of the tools/list reply (JSON-RPC id 2) in a stdio server's output; [] when there is none."""
+    """The tools of the tools/list reply (JSON-RPC id 2) in a stdio server's output; [] when there is none.
+    shortcut: the one-shot stdin cannot ask for page 2, so a reply with nextCursor fails the canary rather than
+    recording a truncated baseline (later tools would read as removed); upgrade to an interactive session if it happens."""
     for line in stdout.splitlines():
         with contextlib.suppress(ValueError):
             reply = json.loads(line)
             if isinstance(reply, dict) and reply.get("id") == 2:
-                return reply.get("result", {}).get("tools", [])
+                result = reply.get("result", {})
+                if result.get("nextCursor"):
+                    raise RuntimeError("tool list is paginated: not supported")
+                return result.get("tools", [])
     return []
 
 
