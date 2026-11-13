@@ -517,7 +517,10 @@ def analyze(inventory_by_host: dict, errors: dict, sources: dict, source_skills:
 def run() -> dict:
     """Gather, fetch, compare and screen; returns the run record (errors are recorded, not raised)."""
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    state["delivered"] = delivered_at()
+    delivered = delivered_at()
+    failed = state.get("run", {})
+    # a marker newer than a failed collect is that failure notice's, not an acknowledgement of the run before it
+    state["delivered"] = 0.0 if "fatal" in failed and delivered > failed["at"] else delivered
     inventory_by_host, errors = {}, {}
     for host in HOSTS:
         data, error = gather_host(host)

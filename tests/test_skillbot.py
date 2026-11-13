@@ -557,3 +557,16 @@ def test_delivered_marker_follows_labbots_state_dir_not_skillbot_state(tmp_path,
     monkeypatch.setenv("SKILLBOT_STATE", str(tmp_path / "elsewhere" / "skillbot.json"))
     monkeypatch.setenv("LABBOTS_STATE_DIR", str(tmp_path / "state"))
     assert load("skillbot_collect_env", REPO / "bots" / "skillbot" / "collect.py").DELIVERED == tmp_path / "state" / "skillbot.delivered"
+
+
+def test_a_failure_notice_marker_does_not_acknowledge_the_run_before_the_failed_collect(tmp_path, monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(collect, "STATE", tmp_path / "skillbot.json")
+    monkeypatch.setattr(collect, "DELIVERED", tmp_path / "skillbot.delivered")
+    monkeypatch.setattr(collect, "HOSTS", [])
+    monkeypatch.setattr(collect, "fetch_source", lambda *args: ({"tag": "v1", "version": "1", "basis": "x"}, {}, {}, None))
+    # run A at -30h never had its post delivered; collect B at -6h failed; the failure notice was delivered at -5h
+    collect.STATE.write_text(json.dumps({"current": {"at": now - 30 * 3600, "items": []}, "run": {"at": now - 6 * 3600, "fatal": "boom"}}))
+    collect.DELIVERED.write_text(f"{now - 5 * 3600}\n")
+    collect.run()
+    assert json.loads(collect.STATE.read_text())["delivered"] == 0.0

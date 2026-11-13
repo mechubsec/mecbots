@@ -4,6 +4,7 @@
 
 - run_bot: a report that prints empty markers and then exits non-zero is no longer recorded as delivered.
 - skillbot: the delivered marker is read from `LABBOTS_STATE_DIR`, where the runner writes it, so setting `SKILLBOT_STATE` alone no longer hides deliveries.
+- skillbot: a marker written after a failed collect (its failure notice) no longer acknowledges the run before it.
 
 ## 0.0.1
 
