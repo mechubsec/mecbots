@@ -570,3 +570,7 @@ def test_a_failure_notice_marker_does_not_acknowledge_the_run_before_the_failed_
     collect.DELIVERED.write_text(f"{now - 5 * 3600}\n")
     collect.run()
     assert json.loads(collect.STATE.read_text())["delivered"] == 0.0
+    # run A was delivered at -29h, before collect B failed: that acknowledgement survives B's failure notice
+    collect.STATE.write_text(json.dumps({"current": {"at": now - 30 * 3600, "items": []}, "run": {"at": now - 6 * 3600, "fatal": "boom"}, "delivered": now - 29 * 3600}))
+    collect.run()
+    assert json.loads(collect.STATE.read_text())["delivered"] == now - 29 * 3600

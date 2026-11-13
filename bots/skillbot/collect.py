@@ -519,8 +519,9 @@ def run() -> dict:
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
     delivered = delivered_at()
     failed = state.get("run", {})
-    # a marker newer than a failed collect is that failure notice's, not an acknowledgement of the run before it
-    state["delivered"] = 0.0 if "fatal" in failed and delivered > failed["at"] else delivered
+    # a marker newer than a failed collect is that failure notice's, not an acknowledgement of the run before it:
+    # keep what the failed collect itself saw, so a run delivered before the failure stays acknowledged
+    state["delivered"] = state.get("delivered", 0.0) if "fatal" in failed and delivered > failed["at"] else delivered
     inventory_by_host, errors = {}, {}
     for host in HOSTS:
         data, error = gather_host(host)
@@ -560,6 +561,7 @@ def main() -> int:
     except Exception as exc:
         state = json.loads(STATE.read_text()) if STATE.exists() else {}
         state["run"] = {"at": time.time(), "fatal": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        state["delivered"] = delivered_at()  # as it stood before this failure's own notice: run() keeps it over that notice's marker
         save_state(state)
         raise
     print(f"skillbot collect: {time.time() - started:.0f}s, outdated={len(record['findings']['outdated'])} "
