@@ -108,3 +108,57 @@ def test_scrub_failure_stops_post_and_save_failure_does_not(tmp_path, monkeypatc
     posted.clear()
     monkeypatch.setattr(run_bot, "scrub", lambda *args: (_ for _ in ()).throw(RuntimeError("boom")))
     assert run_bot.main() == 1 and not posted
+
+
+# --- review fixes: fail closed, scrub gaps, report files ---
+
+def test_unreadable_redact_file_stops_the_post_but_a_missing_one_does_not(tmp_path, monkeypatch):
+    _fake_bot(tmp_path, monkeypatch, [])
+    path = tmp_path / "redact.txt"
+    path.unlink()
+    path.mkdir()  # a directory: IsADirectoryError is an OSError, not "missing"
+    try:
+        run_bot.load_names(path)
+        raise AssertionError("an unreadable redact file must not read as missing")
+    except OSError:
+        pass
+    posted = []
+    real_run = run_bot.subprocess.run
+    monkeypatch.setattr(run_bot.subprocess, "run", lambda cmd, **kw: posted.append(cmd) or real_run(["true"]) if cmd[0] == "hermes" else real_run(cmd, **kw))
+    assert run_bot.main() == 1 and not posted
+
+
+def test_scrub_ipv4_mapped_ipv6_dotted_mac_and_version_context_on_the_same_line_only():
+    assert run_bot.scrub("peer ::ffff:192.0.2.10 and ::ffff:192.0.2.11.", []) == "peer [ip] and [ip]."
+    assert run_bot.scrub("mac aabb.ccdd.eeff, AABB.CCDD.EEFF. ok", []) == "mac [mac], [mac]. ok"
+    assert run_bot.scrub("version\n192.0.2.10", []) == "version\n[ip]"  # the word on the line above exempts nothing
+    assert run_bot.scrub("release \t\n 192.0.2.10", []) == "release \t\n [ip]"
+    assert run_bot.scrub("release 1.99.2.0", []) == "release 1.99.2.0"
+
+
+def test_two_saves_in_one_second_keep_both_and_leave_no_temp_file(tmp_path):
+    root = tmp_path / "reports"
+    relative = run_bot.report_path("socbot", 1_800_000_000.0)
+    assert relative.name.count("_") == 1 and len(relative.stem.split("_")[1]) == 6  # seconds in the name
+    first = run_bot.save_report(relative, "one", root)
+    second = run_bot.save_report(relative, "two", root)
+    third = run_bot.save_report(relative, "three", root)
+    assert len({first, second, third}) == 3 and first == relative
+    assert [(root / path).read_text() for path in (first, second, third)] == ["one\n", "two\n", "three\n"]
+    assert sorted(path.name for path in (root / "socbot").glob("*.md")) == sorted(path.name for path in (first, second, third))
+    assert sorted(path.name for path in root.iterdir()) == [".lock", "index.html", "socbot"]
+    assert all(name in (root / "index.html").read_text() for name in (second.name, third.name))
+
+
+def test_save_report_waits_for_the_lock(tmp_path):
+    import fcntl, threading
+    root = tmp_path / "reports"
+    root.mkdir(mode=0o700)
+    done = threading.Event()
+    with open(root / ".lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        worker = threading.Thread(target=lambda: (run_bot.save_report(run_bot.Path("bot") / "a.md", "x", root), done.set()))
+        worker.start()
+        assert not done.wait(0.3)  # blocked while another run holds the lock
+    assert done.wait(5)
+    worker.join()

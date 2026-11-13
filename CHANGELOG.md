@@ -3,8 +3,11 @@
 ## 0.2.0
 
 - Runner: two-tier reporting. The full report is saved locally with an index page; Discord gets a scrubbed
-  copy (addresses, MACs, names from a private redact list). `--dry-run --full`. New
-  `systemd/labbots-reports.service` (loopback only).
+  copy (addresses, MACs, names from a private redact list). `--dry-run --full`. There is no always-on report
+  page: read the files, or serve them only while your own SSH session is open. Review fixes: an unreadable redact
+  list stops the post (only a missing one is tolerated); IPv4-mapped IPv6 and dotted MACs are scrubbed; the
+  "version" exemption stays on one line; reports are named to the second with a suffix on collision; the index is
+  rewritten atomically under a lock.
 - socbot: exact alert counts from one `alert_counts` call instead of capped per-vendor pages. An escalation
   queue (at most three items) for an agent; a tighter advice prompt.
 - skillbot: seven fixes. Ahead-of-upstream skills are reported; sources without a release tag are read from

@@ -97,13 +97,18 @@ bot needs, one per bot. Per-bot needs are in [docs/bots/](bots/).
 
 Every post has two copies.
 
-- **Full report**, kept local: `~/labbots-reports/<bot>/YYYY-MM-DD_HHMM.md` (directories mode 700, files 600,
-  newest 60 per bot), plus an `index.html` listing each bot's newest 20. The bot's post says where it is.
+- **Full report**, kept local: `~/labbots-reports/<bot>/YYYY-MM-DD_HHMMSS.md` (directories mode 700, files 600,
+  newest 60 per bot; a second run in the same second gets `_2`, `_3`), plus an `index.html` listing each bot's
+  newest 20, rewritten atomically under a lock so bots finishing together cannot interleave. The bot's post says
+  where it is.
 - **Discord copy**, scrubbed: IPv4 and IPv6 addresses become `[ip]`, MAC addresses `[mac]`, and every name in the
-  redact list `[name]`. Version numbers that look like addresses are kept when the text around them says
-  "version", "upstream" or similar.
+  redact list `[name]`. Dotted MACs (`aabb.ccdd.eeff`) and IPv4-mapped IPv6 (`::ffff:192.0.2.10`) are scrubbed too.
+  Version numbers that look like addresses are kept when the word "version", "upstream" or similar is just before
+  them on the same line.
 
-A scrub failure stops the post. A failed local copy does not; the post says so.
+A scrub failure stops the post, and so does a redact list that exists but cannot be read (permissions, a
+directory, an I/O error): only a list that does not exist is tolerated. A failed local copy does not stop it; the
+post says so.
 
 ### The redact list
 
@@ -120,19 +125,24 @@ example.org
 ```
 
 With this list `labhost-1 and a.b.example.org` becomes `[name] and [name]`, and `labhost-10` is left alone. Keep
-the file private and out of any repository. If it is missing, only addresses are scrubbed and the post says so.
+the file private and out of any repository. If it does not exist, only addresses are scrubbed and the post says so.
 
 ### Reading the full reports
 
-Serve the folder on loopback only, then reach it over an SSH tunnel:
+There is deliberately no always-on report server: a web server on loopback would let any local process on the
+host read the unscrubbed reports and bypass the 700/600 modes. Read them on demand, inside your own SSH session.
 
 ```sh
-cp systemd/labbots-reports.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now labbots-reports.service
+ssh you@bot-host cat '~/labbots-reports/<bot>/<file>.md'
 ```
 
-From your own machine: `ssh -L 8801:127.0.0.1:8801 you@bot-host`, then open `http://127.0.0.1:8801/`.
-Do not bind it to a LAN address: the reports are unscrubbed.
+or a page that exists only while that session is open (it stops when you disconnect):
+
+```sh
+ssh -L 8801:127.0.0.1:8801 you@bot-host 'python3 -m http.server 8801 --bind 127.0.0.1 --directory ~/labbots-reports'
+```
+
+then open `http://127.0.0.1:8801/` on your own machine. Never bind it to a LAN address: the reports are unscrubbed.
 
 To see what Discord would get without posting: `python3 -I bin/run_bot.py <bot> --dry-run`. Add `--full` for the
 unscrubbed text.

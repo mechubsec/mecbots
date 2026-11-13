@@ -4,8 +4,8 @@
   machine. Scrubbing is a safety net, not a guarantee: still do not point a bot at a server you do not trust.
 - **The redact list only catches names it contains.** Nothing refreshes it. A new host or device is posted by
   name until you add it.
-- **Version numbers that look like addresses may be redacted.** `1.2.3.4` with nothing around it saying
-  "version" is treated as an address. Numbers over 255 in a part are kept.
+- **Version numbers that look like addresses may be redacted.** `1.2.3.4` is treated as an address unless the
+  word "version", "upstream" or similar is just before it on the same line. Numbers over 255 in a part are kept.
 - **A dry run of some bots writes state.** socbot writes its state file and its escalation queue; so does
   reposbot's and skillbot's collect. Delete them if the real first run must be the baseline.
 - **The advice model cannot see evidence the report omits.** It reads only the report. It may blame the wrong

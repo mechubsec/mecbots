@@ -6,6 +6,7 @@ Usage: run_bot.py <bot> [--dry-run [--full]]
 Two tiers: the full report is kept unredacted under ~/labbots-reports; Discord gets scrub()bed text.
 """
 
+import fcntl
 import html
 import ipaddress
 import json
@@ -29,10 +30,13 @@ KEEP_REPORTS = 60
 INDEX_LINKS = 20
 
 MAC_RE = re.compile(r"(?<![0-9a-f:-])(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}(?![0-9a-f:-])", re.I)
-IPV6_RE = re.compile(r"(?<![\w:])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:])", re.I)
+DOTTED_MAC_RE = re.compile(r"(?<![0-9a-f.])(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}(?![0-9a-f])(?!\.[0-9a-f])", re.I)  # aabb.ccdd.eeff
+# the optional dotted tail makes ::ffff:192.0.2.10 one token, so the IPv4 pass never sees half of it
+IPV6_RE = re.compile(r"(?<![\w:])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:(?:\.\d{1,3}){3})?(?![\w:])", re.I)
 # a dotted quad that is not part of a longer dotted number
 IPV4_RE = re.compile(r"(?<!\d)(?<!\d\.)\d{1,3}(?:\.\d{1,3}){3}(?!\d)(?!\.\d)")
-VERSION_WORD = re.compile(r"(?:\b(?:version|ver|v|upstream|release)|→)\s*:?\s*$", re.I)
+# same line only: [ \t], never \s (and \Z, since $ also matches before a final newline), or an address on the line after the word escapes redaction
+VERSION_WORD = re.compile(r"(?:\b(?:version|ver|v|upstream|release)|→)[ \t]*:?[ \t]*\Z", re.I)
 VERSION_LINE = re.compile(r"\b(?:version|upstream|release|latest|upgrade)\b|\bv\d", re.I)
 
 
@@ -80,7 +84,7 @@ def _ipv6(match: re.Match) -> str:
 def scrub(text: str, names: list[str]) -> str:
     """Text safe for Discord: IPv4/IPv6 -> [ip], MAC -> [mac], and each listed name (whole token,
     case-insensitive, longest first; a domain also covers its subdomains) -> [name]."""
-    text = MAC_RE.sub("[mac]", text)
+    text = DOTTED_MAC_RE.sub("[mac]", MAC_RE.sub("[mac]", text))
     text = IPV6_RE.sub(_ipv6, text)
     text = IPV4_RE.sub(_ipv4_or_version, text)
     cleaned = sorted({name.strip().lstrip("*.").lower() for name in names if name.strip().lstrip("*.")}, key=len, reverse=True)
@@ -91,17 +95,18 @@ def scrub(text: str, names: list[str]) -> str:
 
 
 def load_names(path: Path) -> list[str] | None:
-    """Names from the private redact file (one per line, # comments); None when it cannot be read."""
+    """Names from the private redact file (one per line, # comments); None only when the file does not
+    exist. Any other read error (permissions, a directory, I/O) propagates, so the post stops."""
     try:
         lines = path.read_text().splitlines()
-    except OSError:
+    except FileNotFoundError:
         return None
     return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
 
 
-def _write_private(path: Path, text: str) -> None:
-    """Write text to path with mode 600."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_private(path: Path, text: str, exclusive: bool = False) -> None:
+    """Write text to path with mode 600; exclusive raises FileExistsError instead of overwriting."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC), 0o600)
     with os.fdopen(descriptor, "w") as handle:
         handle.write(text)
     os.chmod(path, 0o600)
@@ -111,7 +116,7 @@ def report_path(instance: str, now: float) -> Path:
     """Where the full report of this run goes, relative to the reports directory."""
     if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", instance):
         raise ValueError(f"bad bot name {instance!r}")
-    return Path(instance) / (time.strftime("%Y-%m-%d_%H%M", time.localtime(now)) + ".md")
+    return Path(instance) / (time.strftime("%Y-%m-%d_%H%M%S", time.localtime(now)) + ".md")
 
 
 def write_index(root: Path) -> None:
@@ -122,20 +127,34 @@ def write_index(root: Path) -> None:
         links = "".join(f'<li><a href="{html.escape(urllib.parse.quote(bot_dir.name) + "/" + urllib.parse.quote(name), quote=True)}">'
                         f"{html.escape(name)}</a></li>" for name in files)
         sections.append(f"<h2>{html.escape(bot_dir.name)}</h2><ul>{links}</ul>")
-    _write_private(root / "index.html", '<!doctype html><meta charset="utf-8"><title>labbots reports</title>'
+    temporary = root / "index.html.tmp"  # callers hold the lock; replace keeps readers from seeing half a page
+    _write_private(temporary, '<!doctype html><meta charset="utf-8"><title>labbots reports</title>'
                    "<h1>labbots reports</h1>" + "".join(sections))
+    os.replace(temporary, root / "index.html")
 
 
-def save_report(relative: Path, message: str, root: Path) -> None:
+def save_report(relative: Path, message: str, root: Path) -> Path:
     """Keep the unredacted message at root/<relative> (dirs 700, file 600), prune to the newest
-    KEEP_REPORTS per bot and refresh the index."""
+    KEEP_REPORTS per bot and refresh the index, all under a lock file so bots finishing together
+    do not interleave. A name already taken gets _2, _3 ... (they sort after it); returns the path used."""
     for directory in (root, root / relative.parent):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-    _write_private(root / relative, message + "\n")
-    for stale in sorted((root / relative.parent).glob("*.md"))[:-KEEP_REPORTS]:
-        stale.unlink()
-    write_index(root)
+    with open(root / ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for attempt in range(1, 1000):
+            saved = relative if attempt == 1 else relative.with_name(f"{relative.stem}_{attempt}{relative.suffix}")
+            try:
+                _write_private(root / saved, message + "\n", exclusive=True)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise FileExistsError(f"no free name for {relative}")
+        for stale in sorted((root / relative.parent).glob("*.md"))[:-KEEP_REPORTS]:
+            stale.unlink()
+        write_index(root)
+    return saved
 
 
 def advise(prompt: str, report: str) -> str:
@@ -188,7 +207,7 @@ def main() -> int:
     try:
         relative = report_path(sys.argv[1], time.time())
         if not dry_run:
-            save_report(relative, message, REPORTS_DIR)
+            relative = save_report(relative, message, REPORTS_DIR)
     except Exception as exc:
         notes.append(f"local copy failed: {type(exc).__name__}")
     # tier 2: Discord gets the scrubbed text; a scrub failure must stop the post
