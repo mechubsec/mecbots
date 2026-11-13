@@ -201,3 +201,8 @@ def test_no_delivered_marker_on_a_dry_run_a_failed_post_a_failed_scrub_or_a_fail
     monkeypatch.undo()
     posted, marker = _delivery_setup(tmp_path, monkeypatch, [], 'raise SystemExit(3)')  # report.py crashed: the failure notice posts, nothing was delivered
     assert run_bot.main() == 0 and posted and not marker.exists()
+
+
+def test_no_delivered_marker_when_empty_markers_are_followed_by_a_crash(tmp_path, monkeypatch):
+    posted, marker = _delivery_setup(tmp_path, monkeypatch, [], 'print("REPORT START\\nREPORT END")\nraise SystemExit(3)')
+    assert run_bot.main() == 0 and not posted and not marker.exists()

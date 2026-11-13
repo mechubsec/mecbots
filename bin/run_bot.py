@@ -215,7 +215,7 @@ def main() -> int:
         report_ran = False  # the failure notice below is posted, but it is not a delivered report
         report = f"**{sys.argv[1]}: report failed** (exit {result.returncode})\n{result.stderr.strip()[-1500:]}"
     if not report:  # watcher bots print an empty report when nothing changed
-        if not dry_run:
+        if not dry_run and result.returncode == 0:  # markers printed, then a crash: nothing was intentionally empty
             _delivered(sys.argv[1])
         return 0
 

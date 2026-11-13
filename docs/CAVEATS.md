@@ -19,9 +19,6 @@
 
 ## Known issues (from review, not yet fixed)
 
-- **A report script that prints empty markers and then exits non-zero is still recorded as delivered.** The
-  runner does not check the exit code on the empty-report path, so a bot that reads the delivered marker
-  (skillbot) could move its baseline past a failed run.
 - **skillbot's delivered marker is a time, not a run.** If a collect fails after an earlier run's post also
   failed, the marker written for the failure notice can be taken as acknowledging the earlier run.
 - **Changing `SKILLBOT_STATE` or `LABBOTS_STATE_DIR` alone splits the marker's path.** Set both, or neither, or

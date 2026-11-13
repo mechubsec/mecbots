@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- run_bot: a report that prints empty markers and then exits non-zero is no longer recorded as delivered.
+
 ## 0.0.1
 
 Still alpha quality.
