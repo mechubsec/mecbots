@@ -137,7 +137,7 @@ def parse_stdio_tools(stdout: str) -> list[dict]:
             reply = json.loads(line)
             if isinstance(reply, dict) and reply.get("id") == 2:
                 result = reply.get("result", {})
-                if result.get("nextCursor"):
+                if result.get("nextCursor") is not None:  # an empty-string cursor is still another page
                     raise RuntimeError("tool list is paginated: not supported")
                 return result.get("tools", [])
     return []

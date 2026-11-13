@@ -25,7 +25,7 @@
   Versions are printed with a leading `v` (also canarybot's tags), so the runner's scrub keeps four-part ones such
   as `v1.99.2.0` instead of turning them into `[ip]`.
 - canarybot: the tool surface comes from the image's own registry over stdio; no hand-copied write-tool table. A paginated
-  stdio tool list fails the canary instead of recording a truncated baseline.
+  stdio tool list (any `nextCursor`, even an empty one) fails the canary instead of recording a truncated baseline.
 - Docs split: a short README, with setup, rules, caveats, ideas, versioning and per-bot details in their own files.
 
 ## 0.1.0

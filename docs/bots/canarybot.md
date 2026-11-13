@@ -18,7 +18,7 @@ The container runs loopback only, read-only, with all capabilities dropped and a
 check compares `serverInfo.version` with the tag. The tool surface comes from the image's own registry,
 listed over stdio with no network and no token, so write tools that a token scope would hide are included;
 the HTTP listing under a `*` token must be a subset of it. The one-shot stdio session reads a single page of
-`tools/list`; if the reply carries `nextCursor` the canary fails with "tool list is paginated: not supported"
+`tools/list`; if the reply carries a `nextCursor` (even an empty string) the canary fails with "tool list is paginated: not supported"
 instead of recording a truncated baseline (later tools would read as removed).
 
 ## Safety rules it enforces

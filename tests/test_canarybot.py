@@ -89,3 +89,12 @@ def test_versions_in_report_lines_survive_the_runners_scrub():
              canarybot.format_result("rustjunosmcp", "2.7.5.1", canarybot.verdict("2.7.5.1", "2.7.5.0"), 1.0, {}, None, ["log"])]
     assert all("v2.7.5.1" in line for line in lines) and "v2.7.5.0" in lines[1]
     assert [run_bot.scrub(line, []) for line in lines] == lines
+
+
+def test_an_empty_string_cursor_still_means_another_page():
+    import pytest
+    for cursor in ('""', '"page2"'):
+        reply = '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}],"nextCursor":' + cursor + '}}\n'
+        with pytest.raises(RuntimeError, match="paginated"):
+            canarybot.parse_stdio_tools(reply)
+    assert canarybot.parse_stdio_tools('{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}],"nextCursor":null}}\n') == [{"name": "a"}]
