@@ -12,7 +12,7 @@ import re
 import sys
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib"))
@@ -31,6 +31,7 @@ QUIET_ESCALATE_HOURS = 6  # firewall-quiet: logging at the previous run, now qui
 ESCALATION_PRIORITY = {"new-high-alert": 0, "deny-spike": 1, "firewall-quiet": 2}
 # a signature unseen this long is forgotten, so its return counts as new
 FORGET_SECONDS = 30 * 86400
+WINDOW_SECONDS = 24 * 3600  # what one run looks back over
 LONG_QUIET_HOURS = 48
 SHOWN = 10
 # SRX: flow_session_deny; PAN-OS traffic logs become "flow_" + subtype (flow_deny, flow_drop)
@@ -142,13 +143,14 @@ def snapshot(run: dict) -> dict:
             "logging": sorted(item["name"] for item in run["ingest"].get("firewalls", []) if not item.get("stale"))}
 
 
-def write_escalations(path: Path, items: list[dict], now: float) -> None:
-    """The queue file {at, items}, written atomically with mode 600 (an empty list is a valid, deliberate queue)."""
+def write_escalations(path: Path, items: list[dict], now: float, since: float) -> None:
+    """The queue file {at, since, items}, written atomically with mode 600 (an empty list is a valid, deliberate queue).
+    `since` is the start every query of the run was given and `at` is after the last one: together the window the run looked at."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w") as handle:
-        json.dump({"at": now, "items": items}, handle, indent=1)
+        json.dump({"at": now, "since": since, "items": items}, handle, indent=1)
     os.replace(temporary, path)
 
 
@@ -198,14 +200,16 @@ def build_report(run: dict) -> str:
 
 def collect(call, now: float, known: dict, baseline: bool, previous: dict | None = None) -> tuple[dict, dict]:
     """Query SSDF and return (run, known'). call(tool, arguments) returns one raw tool reply; `previous` is the last run's snapshot."""
+    # one absolute start for every query, the same one the queue records: a relative "now-24h" is resolved by the server per call
+    since = datetime.fromtimestamp(now - WINDOW_SECONDS, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        alert_reply = checked("alert_counts", call("alert_counts", {"since": "now-24h", "min_severity": "medium", "providers": ""}))
+        alert_reply = checked("alert_counts", call("alert_counts", {"since": since, "min_severity": "medium", "providers": ""}))
     except RuntimeError as exc:
         if re.search(r"unknown|not found|no such|forbidden|not (?:permitted|allowed|authori[sz]ed)|unauthori[sz]ed|scope", str(exc), re.I):
             raise RuntimeError("alert_counts is missing or not allowed: socbot needs an SSDF version that has alert_counts, "
                                f"and its token must list it ({str(exc)[:100]})") from exc
         raise
-    denied_replies = [checked("query_flows", call("query_flows", {"action": action, "since": "now-24h", "limit": DENY_LIMIT}))
+    denied_replies = [checked("query_flows", call("query_flows", {"action": action, "since": since, "limit": DENY_LIMIT}))
                       for action in DENY_ACTIONS]
     denied_rows = [row for reply in denied_replies for row in reply["rows"]]
     ingest = checked("ingest_status", call("ingest_status", {}))
@@ -238,7 +242,8 @@ def main() -> int:
             # stored apart from `known`: a quiet first night leaves `known` empty but is still the baseline
             run, known = collect(lambda tool, arguments: mcp_call_tools(SSDF_MCP, [(tool, arguments)])[0],
                                  now, state.get("known", {}), not state.get("baselined", False), state.get("last"))
-            write_escalations(ESCALATIONS, run["escalated"], time.time())  # stamped after the queries: socagent ends its evidence window here
+            # `at` is stamped after the queries and `since` is the start they were all given: socagent fetches exactly that window
+            write_escalations(ESCALATIONS, run["escalated"], time.time(), now - WINDOW_SECONDS)
             # the new state is saved only after the queue was written: a failed write retries tomorrow's comparison, the escalation is not lost
             state = {"known": known, "baselined": True, "last": snapshot(run)}
             STATE.write_text(json.dumps(state, indent=1))

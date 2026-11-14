@@ -85,7 +85,8 @@ def test_collect_reads_live_shaped_replies():
     calls = []
     run, known = socbot.collect(lambda tool, arguments: calls.append((tool, arguments)) or replies[tool], NOW, {}, False)
     assert [(tool, arguments) for tool, arguments in calls if tool.endswith("alerts") or tool == "alert_counts"] == [
-        ("alert_counts", {"since": "now-24h", "min_severity": "medium", "providers": ""})]  # one exact-count call, no recent_alerts
+        ("alert_counts", {"since": "2027-01-14T08:00:00Z", "min_severity": "medium", "providers": ""})]  # one exact-count call, no recent_alerts
+    assert {arguments["since"] for tool, arguments in calls if tool == "query_flows"} == {"2027-01-14T08:00:00Z"}  # every query: NOW - 24 h, absolute
     assert [arguments["action"] for tool, arguments in calls if tool == "query_flows"] == list(socbot.DENY_ACTIONS)
     assert run["new"] == ["N/A"] and run["alerts"][0]["count"] == 2 and not run["alerts_truncated"] and run["denied_src"] == [("198.51.100.8", 3)] and "N/A" in known
 
@@ -189,11 +190,24 @@ def test_report_gains_one_line_only_when_it_escalates():
 def test_queue_file_shape_mode_and_atomic_replace(tmp_path):
     import os, stat
     path = tmp_path / "state" / "socbot-escalations.json"
-    socbot.write_escalations(path, [], NOW)
-    assert json.loads(path.read_text()) == {"at": NOW, "items": []} and stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    socbot.write_escalations(path, [], NOW, NOW - 86400)
+    assert json.loads(path.read_text()) == {"at": NOW, "since": NOW - 86400, "items": []} and stat.S_IMODE(os.stat(path).st_mode) == 0o600
     item = {"id": "1-deny-spike", "kind": "deny-spike", "summary": "s", "facts": {"denied_total": 5}}
-    socbot.write_escalations(path, [item], NOW + 1)
-    assert json.loads(path.read_text()) == {"at": NOW + 1, "items": [item]} and [p.name for p in path.parent.iterdir()] == [path.name]
+    socbot.write_escalations(path, [item], NOW + 1, NOW - 86399)
+    assert json.loads(path.read_text()) == {"at": NOW + 1, "since": NOW - 86399, "items": [item]} and [p.name for p in path.parent.iterdir()] == [path.name]
+
+
+def test_main_records_the_window_it_queried_in_the_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(socbot, "STATE", tmp_path / "socbot.json")
+    monkeypatch.setattr(socbot, "ESCALATIONS", tmp_path / "queue.json")
+    clock = iter([5000.0, 5042.0])  # before the queries, then after them
+    monkeypatch.setattr(socbot.time, "time", lambda: next(clock))
+    empty = {"rows": [], "row_count": 0, "truncated": False}
+    replies = {"alert_counts": empty, "query_flows": empty, "ingest_status": {"firewalls": []}, "fabric_status": {"subjects": []}}
+    monkeypatch.setattr(socbot, "mcp_call_tools", lambda server, calls: [replies[calls[0][0]]])
+    socbot.main()
+    queue = json.loads((tmp_path / "queue.json").read_text())
+    assert (queue["since"], queue["at"]) == (5000.0 - 24 * 3600, 5042.0)
 
 
 def test_main_baseline_run_escalates_nothing_then_next_run_compares_with_the_snapshot(tmp_path, monkeypatch, capsys):

@@ -30,10 +30,11 @@ socbot writes `~/.local/state/labbots/socbot-escalations.json` after each succes
 as [socagent](https://github.com/mechubsec/mecagents) to read:
 
 ```json
-{"at": 1767225600.0, "items": [{"id": "1-new-high-alert", "kind": "new-high-alert", "summary": "...", "facts": {}}]}
+{"at": 1767225600.0, "since": 1767139190.0, "items": [{"id": "1-new-high-alert", "kind": "new-high-alert", "summary": "...", "facts": {}}]}
 ```
 
-At most three items, most urgent first, ids numbered in that order. The kinds:
+`since` is the start time every query of the run was given and `at` is stamped after the last one, so the two bound what the run
+looked at. At most three items, most urgent first, ids numbered in that order. The kinds:
 
 | Kind | Fires when |
 |---|---|

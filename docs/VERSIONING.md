@@ -9,7 +9,7 @@ While below 1.0 a breaking change bumps the minor number; from 1.0 on, the major
 - the **runner command line** (`bin/run_bot.py` arguments, the `REPORT START`/`REPORT END` markers);
 - a **state-file format** under `~/.local/state/labbots/` (keys or shapes that a later run reads);
 - an **environment variable** renamed, removed or given a different meaning;
-- the **escalation queue format** written by socbot (`socbot-escalations.json`: `{at, items: [{id, kind,
+- the **escalation queue format** written by socbot (`socbot-escalations.json`: `{at, since, items: [{id, kind,
   summary, facts}]}` and its kinds), which [mecagents](https://github.com/mechubsec/mecagents) reads.
 
 New bots, new optional variables and tighter checks are minor; fixes and docs are patch.

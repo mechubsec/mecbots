@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- socbot: every query of a run is given one absolute start time (24 h before the run began) instead of a relative one the server resolves per call, and the escalation queue records it as `since`, so socagent can fetch exactly the window socbot looked at. An added key: older readers ignore it.
+
 ## 0.0.2
 
 Still alpha quality.
